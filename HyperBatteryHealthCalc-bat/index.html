@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<!--
+    Copyright (c) HikiMu慕鱼酱 All rights reserved.
+    Version: 26.06.10 (Q-CR Omega 优化版)
+    -->
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>电池容量计算器</title>
+    <meta name="description" content="电池容量计算器是一个工具，用于从导出的ZIP文件中提取电池容量信息，并计算当前电池容量的百分比">
+    <meta name="keywords" content="电池容量计算器, 诊断文件处理, 电池健康度, 电池容量百分比, zip.js库, HyperOS电池容量, MIUI电池容量, 电池容量提取工具, 电池健康度检测">
+    <script src="js/zip.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', 'sans-serif', 'Misans';
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f8f9fa;
+            color: #2d3748;
+        }
+
+        .container {
+            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+            margin-bottom: 20px;
+            border: 1px solid #e2e8f0;
+        }
+
+        h1 {
+            color: #2b6cb0;
+            text-align: center;
+            margin-bottom: 25px;
+            font-weight: 600;
+            font-size: 28px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .instructions {
+            margin-bottom: 25px;
+            padding: 18px;
+            background: linear-gradient(135deg, #ebf8ff 0%, #e6fffa 100%);
+            border-radius: 8px;
+            border-left: 5px solid #4299e1;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+        }
+
+        .file-upload {
+            margin-bottom: 25px;
+        }
+
+        .file-upload input {
+            display: block;
+            width: 95%;
+            padding: 14px;
+            margin-top: 8px;
+            border: 2px dashed #cbd5e0;
+            border-radius: 6px;
+            background-color: #f7fafc;
+            transition: all 0.3s ease;
+        }
+
+        .file-upload input:hover {
+            border-color: #4299e1;
+            background-color: #edf2f7;
+        }
+
+        .input-group {
+            margin-bottom: 25px;
+            transition: all 0.3s ease;
+            display: none;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #2d3748;
+            font-size: 15px;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 14px;
+            box-sizing: border-box;
+            border: 2px solid #e2e8f0;
+            border-radius: 6px;
+            background-color: #ffffff;
+            transition: all 0.3s ease;
+            font-size: 15px;
+        }
+
+        .input-group input:focus {
+            border-color: #4299e1;
+            box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.1);
+            outline: none;
+        }
+
+        button {
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 4px rgba(72, 187, 120, 0.2);
+        }
+
+        button:hover {
+            background: linear-gradient(135deg, #38a169 0%, #2f855a 100%);
+            box-shadow: 0 4px 8px rgba(72, 187, 120, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 16px;
+            background: linear-gradient(135deg, #edf2f7 0%, #e2e8f0 100%);
+            border-radius: 8px;
+            display: none;
+            border-left: 5px solid #4299e1;
+            color: #2d3748;
+            font-weight: 500;
+        }
+
+        .result {
+            margin-top: 25px;
+            padding: 20px;
+            border-radius: 8px;
+            display: none;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        }
+
+        .success {
+            background: linear-gradient(135deg, #f0fff4 0%, #e6fffa 100%);
+            color: #22543d;
+            border-left: 5px solid #48bb78;
+        }
+
+        .error {
+            background: linear-gradient(135deg, #fff5f5 0%, #fed7d7 100%);
+            color: #742a2a;
+            border-left: 5px solid #f56565;
+        }
+
+        .result-header {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .result-content {
+            margin-bottom: 18px;
+        }
+
+        .result-content pre {
+            background-color: #f7fafc;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: 'Cascadia Code', 'Courier New', monospace;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+            border: 1px solid #e2e8f0;
+        }
+
+        .toggle-btn {
+            background: linear-gradient(135deg, #4299e1 0%, #3182ce 100%);
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-top: 12px;
+            display: inline-block;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 4px rgba(66, 153, 225, 0.2);
+        }
+
+        .toggle-btn:hover {
+            background: linear-gradient(135deg, #3182ce 0%, #2b6cb0 100%);
+            box-shadow: 0 4px 8px rgba(66, 153, 225, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .original-text {
+            display: none;
+            margin-top: 12px;
+            padding: 20px;
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            border-radius: 8px;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+            border: 1px solid #e2e8f0;
+            font-family: 'Cascadia Code', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #334155;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
+            max-height: 500px;
+            overflow-y: auto;
+            tab-size: 4;
+            -moz-tab-size: 4;
+        }
+
+        .original-text .battery-key {
+            color: #dc2626;
+            font-weight: 600;
+            background-color: #fef2f2;
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+
+        .original-text .capacity-value {
+            color: #059669;
+            font-weight: 600;
+            background-color: #f0fdf4;
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+
+        .original-text .time-value {
+            color: #7c3aed;
+            font-weight: 500;
+            background-color: #faf5ff;
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+
+        .original-text .section-title {
+            text-align: left;
+            font-weight: 700;
+            font-size: 15px;
+            color: #1e293b;
+            margin: 20px 0 12px 0;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e2e8f0;
+            font-family: 'Arial', 'sans-serif', 'Misans';
+        }
+
+        .original-text .section-title:first-child {
+            margin-top: 0;
+        }
+
+        .original-text .content-block {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .original-text .content-block pre {
+            text-align: left;
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            border: none;
+            font-family: 'Cascadia Code', 'Courier New', monospace;
+        }
+
+        .original-text::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .original-text::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 4px;
+        }
+
+        .original-text::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+
+        .original-text::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 25px;
+            font-size: 14px;
+            color: #718096;
+        }
+
+        .footer a {
+            color: #4299e1;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s ease;
+        }
+
+        .footer a:hover {
+            color: #3182ce;
+            text-decoration: underline;
+        }
+
+        .open-source-links {
+            margin-top: 12px;
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        .open-source-links span {
+            color: #a0aec0;
+        }
+
+        .open-source-links a {
+            color: #4a5568;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s ease;
+            font-family: 'Cascadia Code', 'Arial', sans-serif;
+        }
+
+        .open-source-links a:hover {
+            color: #2d3748;
+            text-decoration: underline;
+        }
+
+        .media-alert {
+            margin-top: 25px;
+            padding: 20px;
+            background: linear-gradient(135deg, #fffaf0 0%, #feebc8 100%);
+            border-radius: 8px;
+            border-left: 5px solid #ed8936;
+        }
+
+        .media-alert h2 {
+            color: #744210;
+            margin-bottom: 12px;
+        }
+
+        .media-alert p {
+            color: #744210;
+            line-height: 1.6;
+        }
+
+        .media-highlight {
+            background-color: #fed7d7;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 600;
+        }
+
+        code,
+        .english-text {
+            font-family: 'Cascadia Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        }
+
+        #calculate-btn {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="watermark-container"
+        style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9999; overflow: hidden;">
+    </div>
+    <div class="container">
+        <h1>小米电池容量计算器</h1>
+
+        <div class="instructions">
+            <p><strong>关于本工具：</strong> 提取诊断文件中的电池数据，并计算当前容量百分比。</p>
+            <p><strong>使用说明：</strong> 请按照以下步骤操作，以获取准确的电池容量百分比。</p>
+            <p><strong style="color:red">⚠️注意: 所有分析过程均在您的浏览器本地完成，数据不会上传至任何服务器，确保您的信息安全</strong></p>
+            <p><strong style="color:red">⚠️免责声明: 若设备出现异常，请前往小米官方售后。<br>本工具仅通过解析系统诊断文件估算电池容量，结果仅供参考，不具备官方检测效力。</strong>
+            </p>
+        </div>
+
+        <div class="instructions">
+            <p>据说先把电量充到 100% 再继续充 30 分钟更准一些哦~</p>
+            <p><strong>步骤 1： </strong>请连续点击"设置 > 全部参数与信息 > 处理器(连续点击)"</p>
+            <p><strong>或： </strong>连续按音量加减键，直至出现提示</p>
+            <p><strong>或： </strong>使用下方一键抓包按钮，手动输入*开始抓包</p>
+            <p><strong>步骤 2：</strong> 稍等片刻后，将系统导出的诊断文件上传至本工具</p>
+            <p><strong>本工具将自动计算</strong></p>
+            <!--
+            <p><strong>步骤 3：</strong> 输入您的HyperOS/MIUI设备的初始电池容量</p>
+            <p><strong>步骤 4：</strong> 点击"计算"按钮，获取当前电池容量的百分比</p>
+            -->
+            <iframe
+                src="//player.bilibili.com/player.html?isOutside=true&aid=114260860472968&bvid=BV13YZ4YEE8B&cid=29177544707&p=1"
+                scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true"
+                width="100%"></iframe>
+        </div>
+
+        <div class="file-upload">
+            <label for="zip-file">选择诊断文件:</label>
+            <input type="file" id="zip-file" accept=".zip" required>
+        </div>
+
+        <!-- 手动输入框 -->
+        <div id="manual-input-container" class="input-group">
+            <label for="initial-capacity">请输入您的HyperOS/MIUI设备的初始电池容量 (mAh):</label>
+            <input type="number" id="initial-capacity" placeholder="例如: 5000" required>
+        </div>
+
+        <a href="tel:*%23*%23284%23*%23" target="_top" style="text-decoration: none;">
+            <button
+                style="background-color: #3498db; margin-bottom: 10px; width: 100%; padding: 12px; border: none; border-radius: 4px; color: white; cursor: pointer; font-size: 16px; font-weight: bold;">
+                🔧 一键抓包
+            </button>
+        </a>
+        <p style="color:red;">(拨号界面中输入" * "以开始抓包)</p>
+
+        <button id="calculate-btn">计算</button>
+
+        <div id="status" class="status"></div>
+        <div id="result" class="result"></div>
+    </div>
+
+    <div class="footer">
+        <p>觉得好用点链接支持下呗～<a href="http://119.29.227.6/pay">【链接】</a></p>
+        <div class="open-source-links">
+            <a href="https://github.com/gildas-lormeau/zip.js">开源工具许可</a>
+            <span>|</span>
+            <a href="https://github.com/Hikimucheno/HyperBatteryHealthCalc">此项目开源地址</a>
+        </div>
+        <p>Copyright © HikiMu慕鱼酱 All rights reserved. | 小米电池容量计算器</p>
+    </div>
+
+
+    <script>
+        // ── Q-CR Omega 优化版: 单次 ZIP 解析 + 统一评分逻辑 ──
+
+        // 评分表 (与 Python battery_core.py 一致 — 统一边界)
+        const RATING_TABLE = [
+            [100.0001, Infinity, '超出设计容量（可能为冗余设计或第三方电池）', '#e67e22'],
+            [90,       100,      '极佳状态',                               '#27ae60'],
+            [80,       90,       '良好状态',                               '#f39c12'],
+            [70,       80,       '正常衰减',                               '#e67e22'],
+            [0,        70,       '建议考虑更换电池',                         '#e74c3c']
+        ];
+
+        function getRatingText(pct) {
+            for (const [lo, hi, text] of RATING_TABLE) {
+                if (pct >= lo && pct <= hi) return text;
+            }
+            return '未知状态';
+        }
+
+        function getRatingColor(pct) {
+            for (const [lo, hi, , color] of RATING_TABLE) {
+                if (pct >= lo && pct <= hi) return color;
+            }
+            return '#718096';
+        }
+
+        // 翻译对照表
+        const BATTERY_TRANSLATIONS = {
+            'Estimated battery capacity': '估算电池容量',
+            'Last learned battery capacity': '上次学习电池容量',
+            'Min learned battery capacity': '最小学习电池容量',
+            'Max learned battery capacity': '最大学习电池容量',
+            'System starts': '系统启动次数',
+            'currently on battery': '当前使用电池供电',
+            'Time on battery': '电池使用总时间',
+            'Charge time remaining': '剩余充电时间',
+            'Discharge': '总放电量',
+            'Screen off discharge': '息屏放电量',
+            'Screen doze discharge': '休眠放电量',
+            'Screen on discharge': '亮屏放电量',
+            'Device light doze discharge': '设备轻度休眠放电',
+            'Device deep doze discharge': '设备深度休眠放电',
+            'Statistics since last charge': '自上次充电以来的统计'
+        };
+
+        // 预编译正则
+        const RE_DESIGN = /batteryFullChargeDesignCapacityUah\s*[:=]\s*(\d+)/;
+        const RE_CYCLE = /batteryCycleCount\s*[:=]\s*(\d+)/;
+        const RE_FULL = /batteryFullCharge(?:Uah)?\s*[:=]\s*(\d+)/;
+        const RE_MARKET = /\[ro\.product\.marketname\]:\s*\[([^\]]+)\]/;
+        const RE_MODEL = /\[ro\.product\.model\]:\s*\[([^\]]+)\]/;
+        const RE_DUMPSTATE = /== dumpstate:\s*(.+)/;
+        const RE_ESTIMATED = /Estimated battery capacity:\s*([\d.]+)\s*mAh/i;
+        const RE_LAST = /Last learned battery capacity:\s*([\d.]+)\s*mAh/i;
+        const RE_MIN = /Min learned battery capacity:\s*([\d.]+)\s*mAh/i;
+        const RE_MAX = /Max learned battery capacity:\s*([\d.]+)\s*mAh/i;
+
+        let lastManualCapacity = null;
+        let parsedOk = false;
+
+        document.addEventListener('DOMContentLoaded', function () {
+            document.getElementById('calculate-btn').addEventListener('click', manualCalculate);
+            document.getElementById('zip-file').addEventListener('change', handleFileSelect);
+        });
+
+        function handleFileSelect() {
+            parsedOk = false;
+            lastManualCapacity = null;
+            document.getElementById('manual-input-container').style.display = 'none';
+            document.getElementById('calculate-btn').style.display = 'none';
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('status').style.display = 'none';
+
+            const file = document.getElementById('zip-file').files[0];
+            if (file) {
+                showStatus('正在自动分析电池数据，请稍候...');
+                parseZipAndRender(file, null);
+            }
+        }
+
+        function manualCalculate() {
+            const file = document.getElementById('zip-file').files[0];
+            if (!file) { showError(document.getElementById('result'), '请选择一个诊断文件'); return; }
+            const val = parseFloat(document.getElementById('initial-capacity').value);
+            if (isNaN(val) || val <= 0) { showError(document.getElementById('result'), '请输入一个有效的初始电池容量'); return; }
+            showStatus('正在解析电池数据，请稍候...');
+            parseZipAndRender(file, val);
+        }
+
+        // ── 单次 ZIP 解析: 同时提取所有数据并渲染结果 ──
+        async function parseZipAndRender(file, manualCapacity) {
+            const resultDiv = document.getElementById('result');
+            const info = {
+                designCapacity: null, cycleCount: null, fullCapacity: null,
+                deviceName: null, reportTime: null, estimatedCapacity: null,
+                lastLearnedCapacity: null, minLearnedCapacity: null,
+                maxLearnedCapacity: null, statistics: null
+            };
+
+            try {
+                const reader = new zip.ZipReader(new zip.BlobReader(file));
+                const entries = await reader.getEntries();
+
+                for (const entry of entries) {
+                    if (!entry.filename.endsWith('.zip')) continue;
+
+                    showStatus('正在解压内层文件...');
+                    const innerBlob = await entry.getData(new zip.BlobWriter('application/zip'));
+                    const innerReader = new zip.ZipReader(new zip.BlobReader(innerBlob));
+                    const innerEntries = await innerReader.getEntries();
+
+                    for (const ie of innerEntries) {
+                        if (ie.filename.includes('android.hardware.health') && ie.filename.endsWith('.txt')) {
+                            const txt = await ie.getData(new zip.TextWriter());
+                            let m = RE_DESIGN.exec(txt);
+                            if (m) info.designCapacity = parseInt(m[1]) / 1000;
+                            m = RE_CYCLE.exec(txt);
+                            if (m) info.cycleCount = parseInt(m[1]);
+                            m = RE_FULL.exec(txt);
+                            if (m) info.fullCapacity = parseInt(m[1]) / 1000;
+                        }
+
+                        if (ie.filename.includes('bugreport') && ie.filename.endsWith('.txt')) {
+                            const txt = await ie.getData(new zip.TextWriter());
+                            parseBugreportText(txt, info);
+                        }
+
+                        if (info.designCapacity && info.minLearnedCapacity) break;
+                    }
+                    await innerReader.close();
+                    if (info.designCapacity && info.minLearnedCapacity) break;
+                }
+                await reader.close();
+
+                const designCap = info.designCapacity || manualCapacity;
+                if (!designCap) {
+                    document.getElementById('manual-input-container').style.display = 'block';
+                    document.getElementById('calculate-btn').style.display = 'block';
+                    document.getElementById('status').style.display = 'none';
+                    if (info.deviceName || info.statistics) {
+                        showResult(resultDiv, buildPartialReport(info), false);
+                    }
+                    return;
+                }
+
+                const currentCap = info.minLearnedCapacity;
+                if (!currentCap) {
+                    showResult(resultDiv, buildPartialReport(info), false);
+                    document.getElementById('status').style.display = 'none';
+                    return;
+                }
+
+                parsedOk = true;
+                lastManualCapacity = manualCapacity;
+                showResult(resultDiv, buildFullReport(info, designCap, currentCap), true);
+                setTimeout(() => { document.getElementById('status').style.display = 'none'; }, 1000);
+
+            } catch (e) {
+                console.error('解析错误:', e);
+                showError(resultDiv, '处理文件时发生错误，请确保文件格式正确');
+                document.getElementById('manual-input-container').style.display = 'block';
+                document.getElementById('calculate-btn').style.display = 'block';
+                document.getElementById('status').style.display = 'none';
+            }
+        }
+
+        // ── 单次扫描 bugreport 文本: 提取设备型号、时间、统计区块 ──
+        function parseBugreportText(text, info) {
+            const lines = text.split('\n');
+            let inStats = false;
+            let statsLines = [];
+            let foundDevice = false;
+
+            for (const raw of lines) {
+                const line = raw.trim();
+
+                if (!foundDevice) {
+                    let m = RE_MARKET.exec(raw);
+                    if (m) { info.deviceName = m[1]; foundDevice = true; continue; }
+                    m = RE_MODEL.exec(raw);
+                    if (m) { info.deviceName = m[1]; foundDevice = true; continue; }
+                }
+
+                if (!info.reportTime) {
+                    const m = RE_DUMPSTATE.exec(line);
+                    if (m) info.reportTime = m[1];
+                }
+
+                if (line.startsWith('Statistics since last charge:')) {
+                    inStats = true;
+                    statsLines.push(line);
+                } else if (inStats) {
+                    if (line === '') {
+                        inStats = false;
+                        info.statistics = statsLines.join('\n');
+                        parseStatsText(info.statistics, info);
+                        statsLines = [];
+                    } else {
+                        statsLines.push(line);
+                    }
+                }
+            }
+
+            if (inStats && statsLines.length) {
+                info.statistics = statsLines.join('\n');
+                parseStatsText(info.statistics, info);
+            }
+        }
+
+        function parseStatsText(text, info) {
+            let m = RE_ESTIMATED.exec(text);
+            if (m) info.estimatedCapacity = parseFloat(m[1]);
+            m = RE_LAST.exec(text);
+            if (m) info.lastLearnedCapacity = Math.floor(parseFloat(m[1]));
+            m = RE_MIN.exec(text);
+            if (m) info.minLearnedCapacity = Math.floor(parseFloat(m[1]));
+            m = RE_MAX.exec(text);
+            if (m) info.maxLearnedCapacity = Math.floor(parseFloat(m[1]));
+        }
+
+        // ── 报告构建 ──
+        function buildFullReport(info, designCap, currentCap) {
+            const pct = (currentCap / designCap) * 100;
+            const rating = getRatingText(pct);
+            const color = getRatingColor(pct);
+            const autoTag = info.designCapacity
+                ? '<span style="color: green;">(自动检测)</span>'
+                : '<span style="color: orange;">(手动输入)</span>';
+
+            let html = `<div class="result-header"><h3>🔋 电池容量详细报告</h3></div>
+            <div class="result-content"><p><strong>📊 基本信息</strong></p>`;
+
+            if (info.deviceName) html += `<p>设备型号: <strong>${escHtml(info.deviceName)}</strong></p>`;
+            if (info.reportTime) html += `<p>诊断时间: <strong>${escHtml(info.reportTime)}</strong></p>`;
+            html += `<p>原始设计容量: <strong>${designCap} mAh</strong> ${autoTag}</p>
+            <p>当前实际容量: <strong>${currentCap} mAh</strong></p>
+            <p>电池健康度: <strong>${pct.toFixed(2)}%</strong>
+            <span style="margin-left:10px;font-size:0.9em;color:${color}">(${escHtml(rating)})</span></p>
+            <p><strong>🔧 电池硬件信息</strong></p>`;
+
+            if (info.estimatedCapacity != null) html += `<p>估算满充容量: <strong>${info.estimatedCapacity} mAh</strong></p>`;
+            if (info.lastLearnedCapacity != null) html += `<p>上次学习容量: <strong>${info.lastLearnedCapacity} mAh</strong></p>`;
+            if (info.minLearnedCapacity != null) html += `<p>最小学习容量: <strong>${info.minLearnedCapacity} mAh</strong></p>`;
+            if (info.maxLearnedCapacity != null) html += `<p>最大学习容量: <strong>${info.maxLearnedCapacity} mAh</strong></p>`;
+            if (info.fullCapacity != null) html += `<p>系统报告满充容量: <strong>${info.fullCapacity.toFixed(0)} mAh</strong></p>`;
+            if (info.cycleCount != null) {
+                html += `<p>充电循环次数: <strong>${info.cycleCount} 次</strong></p>
+                <p style="font-size:0.9em;color:#666;">💡 满充容量会随着循环次数的增加而逐渐减少</p>`;
+            } else {
+                html += '<p>充电循环次数: <strong>未检测到</strong> (不同机型数据有差异)</p>';
+            }
+
+            html += '</div><div class="result-content"><p class="footer">个人开发的小工具，觉得好用点链接支持下呗～<a href="http://119.29.227.6/pay">【链接】</a></p></div>';
+
+            if (info.statistics) {
+                const id = 'ot-' + Date.now();
+                const translated = translateStats(info.statistics);
+                html += `<div class="result-header">
+                <button class="toggle-btn" onclick="toggleOriginalText(this)">📖 显示电池详细信息</button>
+                <div class="original-text" id="${id}">
+                <div class="content-block"><div class="section-title">🔍 电池关键信息翻译</div>
+                <div style="background:#f0f8ff;padding:12px;border-radius:6px;margin-top:8px;">${translated}</div></div>
+                <div class="content-block"><div class="section-title">📄 原始电池数据</div>
+                <pre style="background:#f5f5f5;padding:12px;border-radius:6px;margin-top:8px;max-height:300px;overflow-y:auto;">${escHtml(info.statistics)}</pre></div>
+                </div></div>`;
+            }
+
+            return html;
+        }
+
+        function buildPartialReport(info) {
+            let lines = [''.padEnd(54, '='), '  部分信息已提取（以下为已获取的数据）', ''.padEnd(54, '=')];
+            if (info.deviceName) lines.push(`  设备型号: ${info.deviceName}`);
+            if (info.reportTime) lines.push(`  诊断时间: ${info.reportTime}`);
+            if (info.designCapacity != null && info.designCapacity > 0) lines.push(`  设计容量: ${info.designCapacity} mAh`);
+            if (info.cycleCount != null) lines.push(`  循环次数: ${info.cycleCount} 次`);
+            if (info.statistics) { lines.push(''); lines.push('  --- 原始统计数据 ---'); lines.push(info.statistics); }
+            if (!(info.designCapacity != null && info.designCapacity > 0)) { lines.push(''); lines.push('  [注意] 未检测到设计容量，请在下方手动输入后重试。'); }
+            if (!info.minLearnedCapacity) { lines.push(''); lines.push('  [注意] 未检测到 Min learned battery capacity。'); lines.push('        建议将电量充满后重新抓取诊断文件。'); }
+            lines.push(''.padEnd(54, '='));
+            return `<pre style="font-family:Consolas,monospace;white-space:pre-wrap;padding:8px;">${escHtml(lines.join('\n'))}</pre>`;
+        }
+
+        function translateStats(text) {
+            let out = text;
+            out = out.replace(/(\d+\.?\d*\s*mAh)/g, '<span class="capacity-value">$1</span>');
+            out = out.replace(/(\d+h\s*\d+m\s*\d+s)/g, '<span class="time-value">$1</span>');
+            out = out.replace(/(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})/g, '<span class="time-value">$1</span>');
+            for (const [en, zh] of Object.entries(BATTERY_TRANSLATIONS)) {
+                out = out.replace(new RegExp(en, 'g'), `<span class="battery-key">${en}</span>\n    (${zh})`);
+            }
+            return out;
+        }
+
+        function escHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function showResult(el, msg, ok) {
+            el.innerHTML = msg;
+            el.className = ok ? 'result success' : 'result error';
+            el.style.display = 'block';
+        }
+
+        function showError(el, msg) { showResult(el, msg, false); }
+
+        function showStatus(msg) {
+            const d = document.getElementById('status');
+            d.textContent = msg;
+            d.style.display = 'block';
+        }
+
+        function toggleOriginalText(btn) {
+            const div = btn.nextElementSibling;
+            if (div.style.display === 'block') {
+                div.style.display = 'none';
+                btn.textContent = '📖 显示电池详细信息';
+            } else {
+                div.style.display = 'block';
+                btn.textContent = '📖 隐藏电池详细信息';
+            }
+        }
+    </script>
+</body>
+
+</html>
