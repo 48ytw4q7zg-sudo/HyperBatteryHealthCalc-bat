@@ -1,6 +1,6 @@
 # HyperBatteryHealthCalc-bat (Q-CR Omega v2.1)
 **版本**: 1.3.1 - v2.1
-**作者**: Q X W / HikiMu慕鱼酱
+**作者**: Q X W 
 
 ## 介绍
 
