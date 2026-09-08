@@ -10,14 +10,12 @@ import io
 import re
 import sys
 import math
-import os
-import tempfile
 import zipfile
 from pathlib import Path
 from typing import Optional
 
 from battery_core import BatteryExtractor, BatteryInfo, get_rating_text, get_rating_color
-from report_io import application_dir, configure_standard_streams, resolve_app_path
+from report_io import application_dir, configure_standard_streams, resolve_app_path, write_text_atomic
 
 # Windows GBK 控制台或管道打印 emoji 会触发 UnicodeEncodeError。
 configure_standard_streams()
@@ -280,18 +278,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def write_report_atomic(output_path: Path, content: str) -> None:
+    output_path = resolve_app_path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='\n', dir=output_path.parent, prefix='.battery-report-', suffix='.tmp', delete=False) as stream:
-            temporary_path = Path(stream.name)
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_path, output_path)
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+    write_text_atomic(output_path, content, encoding="utf-8", newline="\n")
 
 
 def main(argv: Optional[list[str]] = None) -> int:

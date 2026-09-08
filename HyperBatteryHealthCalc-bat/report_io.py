@@ -31,24 +31,35 @@ def configure_standard_streams() -> None:
         stream.reconfigure(encoding=encoding or "utf-8", errors="replace")
 
 
-def save_text_report(destination: Path, text: str, source: Path) -> Path:
-    """Atomically save a Notepad-compatible report without replacing its input."""
+def _write_text_atomic(
+    destination: Path,
+    text: str,
+    *,
+    encoding: str = "utf-8",
+    newline: str = "\n",
+    add_final_newline: bool = True,
+    normalize_for_notepad: bool = False,
+) -> Path:
+    """Atomically write text content to destination path."""
     if not text.strip():
         raise ValueError("The report is empty")
+
     target = resolve_app_path(Path(destination))
-    source = Path(source).resolve()
-    if target == source or (target.exists() and source.exists() and target.samefile(source)):
-        raise ValueError("The report cannot replace its diagnostic ZIP")
-    if target.suffix.lower() != ".txt":
-        raise ValueError("Choose a .txt report filename")
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n") + "\n"
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    if normalize_for_notepad:
+        normalized = normalized.replace("\n", "\r\n")
+    if add_final_newline:
+        normalized = normalized + newline
+
     temporary = None
     try:
-        # Keep the temporary on the same filesystem. The existing report stays
-        # intact until the entire replacement has been flushed successfully.
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8-sig", newline="\r\n",
-            prefix=".battery-report-", suffix=".tmp", dir=target.parent,
+            mode="w",
+            encoding=encoding,
+            newline=newline,
+            prefix=".battery-report-",
+            suffix=".tmp",
+            dir=target.parent,
             delete=False,
         ) as stream:
             temporary = Path(stream.name)
@@ -63,3 +74,28 @@ def save_text_report(destination: Path, text: str, source: Path) -> Path:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def write_text_atomic(destination: Path, text: str, *, encoding: str = "utf-8", newline: str = "\n") -> Path:
+    """Public helper for generic atomic text writing."""
+    return _write_text_atomic(
+        destination,
+        text,
+        encoding=encoding,
+        newline=newline,
+        add_final_newline=True,
+        normalize_for_notepad=False,
+    )
+
+
+def save_text_report(destination: Path, text: str, source: Path) -> Path:
+    """Atomically save a Notepad-compatible report without replacing its input."""
+    if not text.strip():
+        raise ValueError("The report is empty")
+    target = resolve_app_path(Path(destination))
+    source = Path(source).resolve()
+    if target == source or (target.exists() and source.exists() and target.samefile(source)):
+        raise ValueError("The report cannot replace its diagnostic ZIP")
+    if target.suffix.lower() != ".txt":
+        raise ValueError("Choose a .txt report filename")
+    return _write_text_atomic(target, text, encoding="utf-8-sig", newline="\r\n", normalize_for_notepad=True, add_final_newline=True)
