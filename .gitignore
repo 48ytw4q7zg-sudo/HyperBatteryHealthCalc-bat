@@ -1,0 +1,10 @@
+/.build/
+/dist/
+__pycache__/
+*.py[cod]
+
+# User-provided diagnostic archives may contain personal device data.
+HyperBatteryHealthCalc-bat/input/*.zip
+HyperBatteryHealthCalc-bat/input/*.7z
+HyperBatteryHealthCalc-bat/input/*.tar
+HyperBatteryHealthCalc-bat/input/*.tar.gz

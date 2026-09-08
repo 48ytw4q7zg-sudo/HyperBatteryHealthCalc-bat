@@ -470,6 +470,7 @@
             'Screen off discharge': '息屏放电量',
             'Screen doze discharge': '休眠放电量',
             'Screen on discharge': '亮屏放电量',
+            'Screen brightnesses': '屏幕亮度分布',
             'Device light doze discharge': '设备轻度休眠放电',
             'Device deep doze discharge': '设备深度休眠放电',
             'Statistics since last charge': '自上次充电以来的统计'
@@ -486,9 +487,43 @@
         const RE_LAST = /Last learned battery capacity:\s*([\d.]+)\s*mAh/i;
         const RE_MIN = /Min learned battery capacity:\s*([\d.]+)\s*mAh/i;
         const RE_MAX = /Max learned battery capacity:\s*([\d.]+)\s*mAh/i;
+        const RE_TIME_ON_BATTERY = /Time on battery:\s*([\ddhms .]+)\s*\(/i;
+        const RE_SCREEN_OFF_TIME = /Time on battery screen off:\s*([\ddhms .]+)\s*\(/i;
+        const RE_SCREEN_ON_TIME = /Screen on:\s*([\ddhms .]+)\s*\(/i;
+        const RE_TOTAL_DISCHARGE = /^\s*Discharge:\s*([\d.]+)\s*mAh/im;
+        const RE_SCREEN_OFF_DISCHARGE = /Screen off discharge:\s*([\d.]+)\s*mAh/i;
+        const RE_SCREEN_DOZE_DISCHARGE = /Screen doze discharge:\s*([\d.]+)\s*mAh/i;
+        const RE_SCREEN_ON_DISCHARGE = /Screen on discharge:\s*([\d.]+)\s*mAh/i;
+        const RE_DEEP_DOZE_DISCHARGE = /Device deep doze discharge:\s*([\d.]+)\s*mAh/i;
+        const RE_SCREEN_BRIGHTNESS_ITEM = /^\s*(dark|dim|medium|light|bright)\s+(.+?)\s+\(([\d.]+)%\)/i;
+        const RE_FULL_WAKELOCK = /Total full wakelock time:\s*([\ddhms .]+)/i;
+        const RE_PARTIAL_WAKELOCK = /Total partial wakelock time:\s*([\ddhms .]+)/i;
+        const RE_WIFI_MULTICAST_COUNT = /Total WiFi Multicast wakelock Count:\s*(\d+)/i;
+        const RE_WIFI_MULTICAST_TIME = /Total WiFi Multicast wakelock time:\s*([\ddhms .]+)/i;
+        const RE_CONNECTIVITY_CHANGES = /Connectivity changes:\s*(\d+)/i;
+        const RE_CELLULAR_KERNEL_ACTIVE = /Cellular kernel active time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_CELLULAR_RX_TIME = /Cellular Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_CELLULAR_DATA_RECEIVED = /Cellular data received:\s*(\S+)/i;
+        const RE_CELLULAR_DATA_SENT = /Cellular data sent:\s*(\S+)/i;
+        const RE_WIFI_SCAN_TIME = /WiFi Scan time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_WIFI_DATA_RECEIVED = /Wifi data received:\s*(\S+)/i;
+        const RE_WIFI_DATA_SENT = /Wifi data sent:\s*(\S+)/i;
+        const RE_BLUETOOTH_TOTAL = /Bluetooth total received:\s*([^,]+),\s*sent:\s*(\S+)/i;
+        const RE_BLUETOOTH_SCAN = /Bluetooth scan time:\s*([\ddhms .]+)/i;
+        const RE_BLUETOOTH_RX = /Bluetooth Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_BLUETOOTH_TX = /Bluetooth Tx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_BLUETOOTH_DRAIN = /Bluetooth Battery drain:\s*([\d.]+)\s*mAh/i;
+        const RE_CPU_LOAD = /Load:\s*([\d.]+)\s*\/\s*([\d.]+)\s*\/\s*([\d.]+)/i;
+        const RE_POWER_DRAIN = /Capacity:\s*[\d.]+,\s*Computed drain:\s*([\d.]+),\s*actual drain:\s*([\d.]+)/i;
+        const RE_POWER_COMPONENT = /^\s{4}([A-Za-z_]+):\s*([\d.]+)(?:.*?\bduration:\s*(.+?))?\s*.*$/i;
+        const RE_UID_POWER = /^\s*UID\s+([^:]+):\s*([\d.]+)(?:\s+fg:\s*([\d.]+))?(?:.*?\s+bg:\s*([\d.]+))?(?:.*?\s+fgs:\s*([\d.]+))?/i;
+        const RE_KERNEL_WAKELOCK_LEADER = /^\s*Kernel Wake lock\s+(.+?):\s*(.+?)\s+\((\d+)\s+times\)/i;
+        const RE_PARTIAL_WAKELOCK_LEADER = /^\s*Wake lock\s+(.+?):\s*(.+?)\s+\((\d+)\s+times\)/i;
 
         let lastManualCapacity = null;
         let parsedOk = false;
+        let parseRevision = 0;
+        let lastParsedResult = null;
 
         document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('calculate-btn').addEventListener('click', manualCalculate);
@@ -496,6 +531,9 @@
         });
 
         function handleFileSelect() {
+            parseRevision += 1;
+            lastParsedResult = null;
+            document.getElementById('initial-capacity').value = '';
             parsedOk = false;
             lastManualCapacity = null;
             document.getElementById('manual-input-container').style.display = 'none';
@@ -510,11 +548,39 @@
             }
         }
 
+        function isTxtEntry(filename, keyword) {
+            const lowerName = (filename || '').toLowerCase();
+            return lowerName.includes(keyword.toLowerCase()) && lowerName.endsWith('.txt');
+        }
+
+        function isZipEntry(filename) {
+            return (filename || '').toLowerCase().endsWith('.zip');
+        }
+
+        async function parseHealthTxtEntry(entry, infoTarget) {
+            const txt = await entry.getData(new zip.TextWriter());
+            const designMatch = RE_DESIGN.exec(txt);
+            const designCapacity = designMatch ? Number(designMatch[1]) / 1000 : null;
+            if (Number.isFinite(designCapacity) && designCapacity > 0 && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
+                infoTarget.designCapacity = designCapacity;
+                infoTarget.designCapacitySource = 'hardware health 设计容量';
+            }
+            const cycleMatch = RE_CYCLE.exec(txt);
+            if (cycleMatch) infoTarget.cycleCount = parseInt(cycleMatch[1]);
+            const fullMatch = RE_FULL.exec(txt);
+            if (fullMatch) infoTarget.fullCapacity = parseInt(fullMatch[1]) / 1000;
+        }
+
+        async function parseBugreportTxtEntry(entry, infoTarget) {
+            const txt = await entry.getData(new zip.TextWriter());
+            parseBugreportText(txt, infoTarget);
+        }
+
         function manualCalculate() {
             const file = document.getElementById('zip-file').files[0];
             if (!file) { showError(document.getElementById('result'), '请选择一个诊断文件'); return; }
-            const val = parseFloat(document.getElementById('initial-capacity').value);
-            if (isNaN(val) || val <= 0) { showError(document.getElementById('result'), '请输入一个有效的初始电池容量'); return; }
+            const val = Number(document.getElementById('initial-capacity').value);
+            if (!Number.isFinite(val) || val <= 0) { showError(document.getElementById('result'), '请输入一个有效的初始电池容量'); return; }
             showStatus('正在解析电池数据，请稍候...');
             parseZipAndRender(file, val);
         }
@@ -522,60 +588,157 @@
         // ── 单次 ZIP 解析: 同时提取所有数据并渲染结果 ──
         async function parseZipAndRender(file, manualCapacity) {
             const resultDiv = document.getElementById('result');
-            const info = {
+            const revision = ++parseRevision;
+            const isCurrent = () => revision === parseRevision;
+            if (!file || !file.name.toLowerCase().endsWith('.zip') || file.size <= 0) {
+                showError(resultDiv, '请选择非空的 .zip 格式诊断包');
+                document.getElementById('status').style.display = 'none';
+                return;
+            }
+            const cachedResult = lastParsedResult && lastParsedResult.file === file ? lastParsedResult : null;
+            const info = cachedResult ? { ...cachedResult.info } : {
                 designCapacity: null, cycleCount: null, fullCapacity: null,
+                designCapacitySource: null, chargeCounter: null,
+                batteryLevel: null, batteryScale: null, voltageMv: null,
+                temperatureC: null, technology: null, statusCode: null,
+                healthCode: null, capacityLevel: null, acPowered: null,
+                usbPowered: null, wirelessPowered: null, dockPowered: null,
+                maxChargingCurrentMa: null, maxChargingVoltageMv: null,
                 deviceName: null, reportTime: null, estimatedCapacity: null,
                 lastLearnedCapacity: null, minLearnedCapacity: null,
-                maxLearnedCapacity: null, statistics: null
+                maxLearnedCapacity: null, statistics: null,
+                timeOnBatterySeconds: null, screenOffSeconds: null,
+                screenOnSeconds: null, totalDischargeMah: null,
+                screenOffDischargeMah: null, screenOnDischargeMah: null,
+                screenDozeDischargeMah: null, deviceDeepDozeDischargeMah: null,
+                fullWakelockSeconds: null, partialWakelockSeconds: null,
+                wifiMulticastWakelockCount: null, wifiMulticastWakelockSeconds: null,
+                connectivityChanges: null, computedDrainMah: null,
+                actualDrainMah: null, powerComponents: [],
+                cellularReceivedBytes: null, cellularSentBytes: null,
+                cellularKernelActiveSeconds: null, cellularRxSeconds: null,
+                wifiReceivedBytes: null, wifiSentBytes: null, wifiScanSeconds: null,
+                bluetoothReceivedBytes: null, bluetoothSentBytes: null,
+                bluetoothScanSeconds: null, bluetoothRxSeconds: null,
+                bluetoothTxSeconds: null, bluetoothDrainMah: null,
+                bluetoothConnectedDevices: [],
+                cpuLoad1m: null, cpuLoad5m: null, cpuLoad15m: null,
+                topUidPower: [], kernelWakelocks: [], partialWakelocks: [],
+                topCpuProcesses: [],
+                screenBrightnesses: [],
+                uidPackages: {}
+            };
+            let hasHealthFile = cachedResult ? cachedResult.hasHealthFile : false;
+            let hasBugreportFile = cachedResult ? cachedResult.hasBugreportFile : false;
+            let parseIssueCount = cachedResult ? cachedResult.parseIssueCount : 0;
+            let reader = null;
+
+            const safeParseEntry = async (entry, label, parser, entryName, mark) => {
+                if (mark === 'health') hasHealthFile = true;
+                if (mark === 'bugreport') hasBugreportFile = true;
+                try {
+                    await parser(entry, info);
+                    if (mark === 'health') {
+                        hasHealthFile = true;
+                    } else if (mark === 'bugreport') {
+                        hasBugreportFile = true;
+                    }
+                    return true;
+                } catch (error) {
+                    parseIssueCount += 1;
+                    console.warn(`解析 ${label} 文件失败: ${entryName}`, error);
+                    return false;
+                }
             };
 
             try {
-                const reader = new zip.ZipReader(new zip.BlobReader(file));
-                const entries = await reader.getEntries();
+                reader = cachedResult ? null : new zip.ZipReader(new zip.BlobReader(file));
+                const entries = reader ? await reader.getEntries() : [];
 
                 for (const entry of entries) {
-                    if (!entry.filename.endsWith('.zip')) continue;
+                    if (!isCurrent()) return;
+                    const entryName = entry.filename || '';
+                    if (entryName.endsWith('/')) continue;
 
-                    showStatus('正在解压内层文件...');
-                    const innerBlob = await entry.getData(new zip.BlobWriter('application/zip'));
-                    const innerReader = new zip.ZipReader(new zip.BlobReader(innerBlob));
-                    const innerEntries = await innerReader.getEntries();
+                    if (isZipEntry(entryName)) {
+                        showStatus('正在解压内层文件...');
+                        let innerBlob = null;
+                        let innerReader = null;
+                        try {
+                            innerBlob = await entry.getData(new zip.BlobWriter('application/zip'));
+                            innerReader = new zip.ZipReader(new zip.BlobReader(innerBlob));
+                            const innerEntries = await innerReader.getEntries();
 
-                    for (const ie of innerEntries) {
-                        if (ie.filename.includes('android.hardware.health') && ie.filename.endsWith('.txt')) {
-                            const txt = await ie.getData(new zip.TextWriter());
-                            let m = RE_DESIGN.exec(txt);
-                            if (m) info.designCapacity = parseInt(m[1]) / 1000;
-                            m = RE_CYCLE.exec(txt);
-                            if (m) info.cycleCount = parseInt(m[1]);
-                            m = RE_FULL.exec(txt);
-                            if (m) info.fullCapacity = parseInt(m[1]) / 1000;
+                            for (const innerEntry of innerEntries) {
+                                if (!isCurrent()) return;
+                                const innerName = innerEntry.filename || '';
+                                if (innerName.endsWith('/')) continue;
+
+                                if (isTxtEntry(innerName, 'android.hardware.health')) {
+                                    await safeParseEntry(innerEntry, 'android.hardware.health', parseHealthTxtEntry, innerName, 'health');
+                                }
+                                if (isTxtEntry(innerName, 'bugreport')) {
+                                    await safeParseEntry(innerEntry, 'bugreport', parseBugreportTxtEntry, innerName, 'bugreport');
+                                }
+
+                            }
+                        } catch (innerZipError) {
+                            parseIssueCount += 1;
+                            console.warn(`读取内层压缩包失败: ${entryName}`, innerZipError);
+                            continue;
+                        } finally {
+                            if (innerReader) {
+                                try { await innerReader.close(); } catch (closeError) { console.warn('关闭内层压缩包失败', closeError); }
+                            }
                         }
 
-                        if (ie.filename.includes('bugreport') && ie.filename.endsWith('.txt')) {
-                            const txt = await ie.getData(new zip.TextWriter());
-                            parseBugreportText(txt, info);
-                        }
-
-                        if (info.designCapacity && info.minLearnedCapacity) break;
+                        continue;
                     }
-                    await innerReader.close();
-                    if (info.designCapacity && info.minLearnedCapacity) break;
-                }
-                await reader.close();
 
-                const designCap = info.designCapacity || manualCapacity;
+                    if (isTxtEntry(entryName, 'android.hardware.health')) {
+                        await safeParseEntry(entry, 'android.hardware.health', parseHealthTxtEntry, entryName, 'health');
+                    }
+                    if (isTxtEntry(entryName, 'bugreport')) {
+                        await safeParseEntry(entry, 'bugreport', parseBugreportTxtEntry, entryName, 'bugreport');
+                    }
+
+                }
+                if (!isCurrent()) return;
+                if (!cachedResult) lastParsedResult = {file, info: {...info}, hasHealthFile, hasBugreportFile, parseIssueCount};
+                const hasManualCapacity = Number.isFinite(manualCapacity) && manualCapacity > 0;
+                const designCap = hasManualCapacity ? manualCapacity : info.designCapacity;
+                if (hasManualCapacity) {
+                    info.designCapacity = manualCapacity;
+                    info.designCapacitySource = '手动输入';
+                }
+                document.getElementById('manual-input-container').style.display = 'block';
+                document.getElementById('calculate-btn').style.display = 'block';
                 if (!designCap) {
                     document.getElementById('manual-input-container').style.display = 'block';
                     document.getElementById('calculate-btn').style.display = 'block';
                     document.getElementById('status').style.display = 'none';
-                    if (info.deviceName || info.statistics) {
-                        showResult(resultDiv, buildPartialReport(info), false);
+                    let failureMessage = null;
+                    if (parseIssueCount > 0) {
+                        failureMessage = `部分日志文件解析失败（${parseIssueCount} 处），请尝试重新导出完整诊断包`;
+                    } else if (!hasHealthFile && !hasBugreportFile) {
+                        failureMessage = '未检测到可识别的健康与电量日志，请确认导出的文件路径包含 android.hardware.health 或 bugreport 文本文件';
+                    } else if ((hasHealthFile || hasBugreportFile) && parseIssueCount === 0) {
+                        failureMessage = '已识别到日志但未提取到容量字段，请上传更完整日志或手动输入容量';
+                    } else if (parseIssueCount > 0) {
+                        failureMessage = `部分日志文件解析失败（${parseIssueCount} 处），请尝试重新导出完整诊断包`;
+                    }
+                    if (info.deviceName || info.statistics || info.batteryLevel != null || info.chargeCounter != null) {
+                        const partialReport = buildPartialReport(info);
+                        const suffix = failureMessage ? `<p style=\"color:#d97706; margin-top:8px;\">${failureMessage}</p>` : '';
+                        showResult(resultDiv, `${partialReport}${suffix}`, false);
+                    } else if (failureMessage) {
+                        showError(resultDiv, failureMessage);
                     }
                     return;
                 }
 
-                const currentCap = info.minLearnedCapacity;
+                const capacityInfo = getCurrentCapacityInfo(info);
+                const currentCap = capacityInfo.value;
                 if (!currentCap) {
                     showResult(resultDiv, buildPartialReport(info), false);
                     document.getElementById('status').style.display = 'none';
@@ -584,15 +747,21 @@
 
                 parsedOk = true;
                 lastManualCapacity = manualCapacity;
-                showResult(resultDiv, buildFullReport(info, designCap, currentCap), true);
-                setTimeout(() => { document.getElementById('status').style.display = 'none'; }, 1000);
+                const warning = parseIssueCount > 0 ? `<p>部分日志解析失败（${parseIssueCount} 处），以下报告仅包含已成功提取的数据。</p>` : '';
+                showResult(resultDiv, buildFullReport(info, designCap, currentCap, capacityInfo) + warning, true);
+                document.getElementById('status').style.display = 'none';
 
             } catch (e) {
+                if (!isCurrent()) return;
                 console.error('解析错误:', e);
                 showError(resultDiv, '处理文件时发生错误，请确保文件格式正确');
                 document.getElementById('manual-input-container').style.display = 'block';
                 document.getElementById('calculate-btn').style.display = 'block';
                 document.getElementById('status').style.display = 'none';
+            } finally {
+                if (reader) {
+                    try { await reader.close(); } catch (closeError) { console.warn('关闭诊断包失败', closeError); }
+                }
             }
         }
 
@@ -600,6 +769,7 @@
         function parseBugreportText(text, info) {
             const lines = text.split('\n');
             let inStats = false;
+            let inBatteryState = false;
             let statsLines = [];
             let foundDevice = false;
 
@@ -616,6 +786,19 @@
                 if (!info.reportTime) {
                     const m = RE_DUMPSTATE.exec(line);
                     if (m) info.reportTime = m[1];
+                }
+
+                if (line === 'Current Battery Service state:') {
+                    inBatteryState = true;
+                    continue;
+                }
+
+                if (inBatteryState) {
+                    if (line.startsWith('MiuiBatteryService') || line.startsWith('---------') || line.startsWith('DUMP OF SERVICE')) {
+                        inBatteryState = false;
+                    } else {
+                        parseBatteryStateLine(line, info);
+                    }
                 }
 
                 if (line.startsWith('Statistics since last charge:')) {
@@ -637,26 +820,78 @@
                 info.statistics = statsLines.join('\n');
                 parseStatsText(info.statistics, info);
             }
+            parsePowerUseStats(text, info);
+            parseWakelockLeaders(text, info);
+            parseConnectivityPowerStats(text, info);
+            parseBluetoothStats(text, info);
+            parseCpuSnapshot(text, info);
         }
 
         function parseStatsText(text, info) {
             let m = RE_ESTIMATED.exec(text);
-            if (m) info.estimatedCapacity = parseFloat(m[1]);
+            if (m) {
+                info.estimatedCapacity = parseFloat(m[1]);
+                if (!(info.designCapacity != null && info.designCapacity > 0)) {
+                    info.designCapacity = info.estimatedCapacity;
+                    info.designCapacitySource = 'batterystats 估算容量';
+                }
+            }
             m = RE_LAST.exec(text);
             if (m) info.lastLearnedCapacity = Math.floor(parseFloat(m[1]));
             m = RE_MIN.exec(text);
             if (m) info.minLearnedCapacity = Math.floor(parseFloat(m[1]));
             m = RE_MAX.exec(text);
             if (m) info.maxLearnedCapacity = Math.floor(parseFloat(m[1]));
+            parseUsageStats(text, info);
+            parsePowerUseStats(text, info);
+            parseWakelockLeaders(text, info);
+        }
+
+        function parseBatteryStateLine(line, info) {
+            const idx = line.indexOf(':');
+            if (idx < 0) return;
+            const key = line.slice(0, idx).trim();
+            const value = line.slice(idx + 1).trim();
+            if (!value) return;
+            const boolValue = value === 'true' ? true : (value === 'false' ? false : null);
+            const intValue = /^-?\d+$/.test(value) ? parseInt(value, 10) : null;
+
+            if (key === 'AC powered') info.acPowered = boolValue;
+            else if (key === 'USB powered') info.usbPowered = boolValue;
+            else if (key === 'Wireless powered') info.wirelessPowered = boolValue;
+            else if (key === 'Dock powered') info.dockPowered = boolValue;
+            else if (key === 'Max charging current' && intValue != null) info.maxChargingCurrentMa = Math.floor(intValue / 1000);
+            else if (key === 'Max charging voltage' && intValue != null) info.maxChargingVoltageMv = Math.floor(intValue / 1000);
+            else if (key === 'Charge counter' && intValue != null) info.chargeCounter = Math.floor(intValue / 1000);
+            else if (key === 'status' && intValue != null) info.statusCode = intValue;
+            else if (key === 'health' && intValue != null) info.healthCode = intValue;
+            else if (key === 'level' && intValue != null) info.batteryLevel = intValue;
+            else if (key === 'scale' && intValue != null) info.batteryScale = intValue;
+            else if (key === 'voltage' && intValue != null) info.voltageMv = intValue;
+            else if (key === 'temperature' && intValue != null) info.temperatureC = intValue / 10;
+            else if (key === 'technology') info.technology = value;
+            else if (key === 'Capacity level' && intValue != null) info.capacityLevel = intValue;
+        }
+
+        function getCurrentCapacityInfo(info) {
+            if (Number.isFinite(info.minLearnedCapacity) && info.minLearnedCapacity > 0) {
+                return { value: info.minLearnedCapacity, source: 'batterystats 最小学习容量' };
+            }
+            const scale = info.batteryScale == null ? 100 : info.batteryScale;
+            if (Number.isFinite(info.chargeCounter) && info.chargeCounter > 0 && Number.isFinite(scale) && scale > 0 && Number.isFinite(info.batteryLevel) && info.batteryLevel >= 0.95 * scale && info.batteryLevel <= scale) {
+                return { value: info.chargeCounter, source: '满电状态 Charge counter 估算' };
+            }
+            return { value: null, source: '未检测到' };
         }
 
         // ── 报告构建 ──
-        function buildFullReport(info, designCap, currentCap) {
+        function buildFullReport(info, designCap, currentCap, capacityInfo) {
             const pct = (currentCap / designCap) * 100;
             const rating = getRatingText(pct);
             const color = getRatingColor(pct);
+            const designSource = info.designCapacitySource || (info.designCapacity ? '自动检测' : '手动输入');
             const autoTag = info.designCapacity
-                ? '<span style="color: green;">(自动检测)</span>'
+                ? `<span style="color: green;">(${escHtml(designSource)})</span>`
                 : '<span style="color: orange;">(手动输入)</span>';
 
             let html = `<div class="result-header"><h3>🔋 电池容量详细报告</h3></div>
@@ -665,7 +900,7 @@
             if (info.deviceName) html += `<p>设备型号: <strong>${escHtml(info.deviceName)}</strong></p>`;
             if (info.reportTime) html += `<p>诊断时间: <strong>${escHtml(info.reportTime)}</strong></p>`;
             html += `<p>原始设计容量: <strong>${designCap} mAh</strong> ${autoTag}</p>
-            <p>当前实际容量: <strong>${currentCap} mAh</strong></p>
+            <p>当前实际容量: <strong>${currentCap} mAh</strong> <span style="color:#666;">（来源：${escHtml(capacityInfo.source)}）</span></p>
             <p>电池健康度: <strong>${pct.toFixed(2)}%</strong>
             <span style="margin-left:10px;font-size:0.9em;color:${color}">(${escHtml(rating)})</span></p>
             <p><strong>🔧 电池硬件信息</strong></p>`;
@@ -675,6 +910,8 @@
             if (info.minLearnedCapacity != null) html += `<p>最小学习容量: <strong>${info.minLearnedCapacity} mAh</strong></p>`;
             if (info.maxLearnedCapacity != null) html += `<p>最大学习容量: <strong>${info.maxLearnedCapacity} mAh</strong></p>`;
             if (info.fullCapacity != null) html += `<p>系统报告满充容量: <strong>${info.fullCapacity.toFixed(0)} mAh</strong></p>`;
+            html += buildBatterySnapshotHtml(info);
+            html += buildUsageDiagnosticsHtml(info, pct);
             if (info.cycleCount != null) {
                 html += `<p>充电循环次数: <strong>${info.cycleCount} 次</strong></p>
                 <p style="font-size:0.9em;color:#666;">💡 满充容量会随着循环次数的增加而逐渐减少</p>`;
@@ -706,15 +943,17 @@
             if (info.reportTime) lines.push(`  诊断时间: ${info.reportTime}`);
             if (info.designCapacity != null && info.designCapacity > 0) lines.push(`  设计容量: ${info.designCapacity} mAh`);
             if (info.cycleCount != null) lines.push(`  循环次数: ${info.cycleCount} 次`);
+            const capacityInfo = getCurrentCapacityInfo(info);
+            if (capacityInfo.value != null) lines.push(`  当前实际容量: ${capacityInfo.value} mAh（${capacityInfo.source}）`);
             if (info.statistics) { lines.push(''); lines.push('  --- 原始统计数据 ---'); lines.push(info.statistics); }
             if (!(info.designCapacity != null && info.designCapacity > 0)) { lines.push(''); lines.push('  [注意] 未检测到设计容量，请在下方手动输入后重试。'); }
-            if (!info.minLearnedCapacity) { lines.push(''); lines.push('  [注意] 未检测到 Min learned battery capacity。'); lines.push('        建议将电量充满后重新抓取诊断文件。'); }
+            if (capacityInfo.value == null) { lines.push(''); lines.push('  [注意] 未检测到有效的学习容量或满电 Charge counter。'); lines.push('        建议将电量充满后重新抓取诊断文件。'); }
             lines.push(''.padEnd(54, '='));
-            return `<pre style="font-family:Consolas,monospace;white-space:pre-wrap;padding:8px;">${escHtml(lines.join('\n'))}</pre>`;
+            return `<pre style="font-family:Consolas,monospace;white-space:pre-wrap;padding:8px;">${escHtml(lines.join('\n'))}</pre>` + buildBatterySnapshotHtml(info) + buildUsageDiagnosticsHtml(info, null);
         }
 
         function translateStats(text) {
-            let out = text;
+            let out = escHtml(text);
             out = out.replace(/(\d+\.?\d*\s*mAh)/g, '<span class="capacity-value">$1</span>');
             out = out.replace(/(\d+h\s*\d+m\s*\d+s)/g, '<span class="time-value">$1</span>');
             out = out.replace(/(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})/g, '<span class="time-value">$1</span>');
@@ -722,6 +961,594 @@
                 out = out.replace(new RegExp(en, 'g'), `<span class="battery-key">${en}</span>\n    (${zh})`);
             }
             return out;
+        }
+
+        function buildBatterySnapshotHtml(info) {
+            const rows = [];
+            if (info.chargeCounter != null) rows.push(`当前电量计数: <strong>${info.chargeCounter} mAh</strong>`);
+            if (info.batteryLevel != null) {
+                const scale = info.batteryScale != null ? `/${info.batteryScale}` : '%';
+                rows.push(`当前电量: <strong>${info.batteryLevel}${scale}</strong>`);
+            }
+            if (info.statusCode != null) rows.push(`充电状态: <strong>${escHtml(getBatteryStatusText(info.statusCode))}</strong>`);
+            if (info.healthCode != null) rows.push(`系统健康状态: <strong>${escHtml(getBatteryHealthText(info.healthCode))}</strong>`);
+            if (info.capacityLevel != null) rows.push(`容量等级: <strong>${escHtml(getCapacityLevelText(info.capacityLevel))}</strong>`);
+            if (info.voltageMv != null) rows.push(`当前电压: <strong>${info.voltageMv} mV</strong>`);
+            if (info.temperatureC != null) rows.push(`当前温度: <strong>${info.temperatureC.toFixed(1)} ℃</strong> <span style="color:#666;">（${escHtml(getTemperatureText(info.temperatureC))}）</span>`);
+            if (info.technology) rows.push(`电池技术: <strong>${escHtml(info.technology)}</strong>`);
+            const powerSource = getPowerSourceText(info);
+            if (powerSource) rows.push(`供电来源: <strong>${escHtml(powerSource)}</strong>`);
+            if (info.maxChargingCurrentMa != null) rows.push(`最大充电电流: <strong>${info.maxChargingCurrentMa} mA</strong>`);
+            if (info.maxChargingVoltageMv != null) rows.push(`最大充电电压: <strong>${info.maxChargingVoltageMv} mV</strong>`);
+            if (info.maxChargingCurrentMa != null && info.maxChargingVoltageMv != null) {
+                const watts = (info.maxChargingCurrentMa * info.maxChargingVoltageMv) / 1000000;
+                rows.push(`估算当前充电功率上限: <strong>${watts.toFixed(2)} W</strong>`);
+            }
+            if (!rows.length) return '';
+            return `<p><strong>📌 当前电池快照</strong></p>` + rows.map(row => `<p>${row}</p>`).join('');
+        }
+
+        function parseUsageStats(text, info) {
+            const durationFields = [
+                [RE_TIME_ON_BATTERY, 'timeOnBatterySeconds'],
+                [RE_SCREEN_OFF_TIME, 'screenOffSeconds'],
+                [RE_SCREEN_ON_TIME, 'screenOnSeconds'],
+                [RE_FULL_WAKELOCK, 'fullWakelockSeconds'],
+                [RE_PARTIAL_WAKELOCK, 'partialWakelockSeconds'],
+                [RE_WIFI_MULTICAST_TIME, 'wifiMulticastWakelockSeconds']
+            ];
+            for (const [pattern, key] of durationFields) {
+                const match = pattern.exec(text);
+                if (match) info[key] = parseDurationSeconds(match[1]);
+            }
+
+            const valueFields = [
+                [RE_TOTAL_DISCHARGE, 'totalDischargeMah'],
+                [RE_SCREEN_OFF_DISCHARGE, 'screenOffDischargeMah'],
+                [RE_SCREEN_DOZE_DISCHARGE, 'screenDozeDischargeMah'],
+                [RE_SCREEN_ON_DISCHARGE, 'screenOnDischargeMah'],
+                [RE_DEEP_DOZE_DISCHARGE, 'deviceDeepDozeDischargeMah']
+            ];
+            for (const [pattern, key] of valueFields) {
+                const match = pattern.exec(text);
+                if (match) info[key] = parseFloat(match[1]);
+            }
+
+            let match = RE_WIFI_MULTICAST_COUNT.exec(text);
+            if (match) info.wifiMulticastWakelockCount = parseInt(match[1], 10);
+            match = RE_CONNECTIVITY_CHANGES.exec(text);
+            if (match) info.connectivityChanges = parseInt(match[1], 10);
+
+            parseScreenBrightnessStats(text, info);
+        }
+
+        function parseScreenBrightnessStats(text, info) {
+            const items = [];
+            let inSection = false;
+            for (const raw of text.split('\n')) {
+                const line = raw.trim();
+                if (line.toLowerCase() === 'screen brightnesses:') {
+                    inSection = true;
+                    continue;
+                }
+                if (!inSection) continue;
+                if (!line) break;
+
+                const match = RE_SCREEN_BRIGHTNESS_ITEM.exec(raw);
+                if (!match) {
+                    if (!/^\s/.test(raw) || line.endsWith(':')) break;
+                    continue;
+                }
+                items.push({
+                    name: match[1].toLowerCase(),
+                    seconds: parseDurationSeconds(match[2]),
+                    percent: parseFloat(match[3])
+                });
+            }
+            if (items.length) {
+                info.screenBrightnesses = items.sort((a, b) => b.seconds - a.seconds);
+            }
+        }
+
+        function parseConnectivityPowerStats(text, info) {
+            const durationFields = [
+                [RE_CELLULAR_KERNEL_ACTIVE, 'cellularKernelActiveSeconds'],
+                [RE_CELLULAR_RX_TIME, 'cellularRxSeconds'],
+                [RE_WIFI_SCAN_TIME, 'wifiScanSeconds']
+            ];
+            for (const [pattern, key] of durationFields) {
+                const match = pattern.exec(text);
+                if (match) info[key] = parseDurationSeconds(match[1]);
+            }
+
+            const sizeFields = [
+                [RE_CELLULAR_DATA_RECEIVED, 'cellularReceivedBytes'],
+                [RE_CELLULAR_DATA_SENT, 'cellularSentBytes'],
+                [RE_WIFI_DATA_RECEIVED, 'wifiReceivedBytes'],
+                [RE_WIFI_DATA_SENT, 'wifiSentBytes']
+            ];
+            for (const [pattern, key] of sizeFields) {
+                const match = pattern.exec(text);
+                if (match) info[key] = parseDataSizeBytes(match[1]);
+            }
+        }
+
+        function parseBluetoothStats(text, info) {
+            let match = RE_BLUETOOTH_TOTAL.exec(text);
+            if (match) {
+                info.bluetoothReceivedBytes = parseDataSizeBytes(match[1]);
+                info.bluetoothSentBytes = parseDataSizeBytes(match[2]);
+            }
+            match = RE_BLUETOOTH_SCAN.exec(text);
+            if (match) info.bluetoothScanSeconds = parseDurationSeconds(match[1]);
+            match = RE_BLUETOOTH_RX.exec(text);
+            if (match) info.bluetoothRxSeconds = parseDurationSeconds(match[1]);
+            match = RE_BLUETOOTH_TX.exec(text);
+            if (match) info.bluetoothTxSeconds = parseDurationSeconds(match[1]);
+            match = RE_BLUETOOTH_DRAIN.exec(text);
+            if (match) info.bluetoothDrainMah = parseFloat(match[1]);
+
+            let inDevices = false;
+            for (const raw of text.split('\n')) {
+                const line = raw.trim();
+                if (line === 'Bluetooth Devices:') {
+                    inDevices = true;
+                    continue;
+                }
+                if (!inDevices) continue;
+                if (!line || line.startsWith('CRITICAL dump') || line.endsWith('Controller:')) {
+                    inDevices = false;
+                    continue;
+                }
+                const deviceMatch = line.match(/^(.+?)\s+profiles=\[[^\]]*\]\s+connected=true\b/i);
+                if (deviceMatch) {
+                    const device = deviceMatch[1].trim();
+                    if (device && !info.bluetoothConnectedDevices.includes(device)) {
+                        info.bluetoothConnectedDevices.push(device);
+                    }
+                }
+            }
+        }
+
+        function parseCpuSnapshot(text, info) {
+            const loadMatch = RE_CPU_LOAD.exec(text);
+            if (loadMatch) {
+                info.cpuLoad1m = parseFloat(loadMatch[1]);
+                info.cpuLoad5m = parseFloat(loadMatch[2]);
+                info.cpuLoad15m = parseFloat(loadMatch[3]);
+            }
+
+            const lines = text.split('\n');
+            const start = lines.findIndex(line => line.trim().startsWith('CPU usage from'));
+            if (start < 0) return;
+            const processes = [];
+            for (let i = start + 1; i < lines.length && processes.length < 5; i += 1) {
+                const match = lines[i].match(/^  ([\d.]+)%\s+\d+\/(.+?):\s+([\d.]+)%\s+user\s+\+\s+([\d.]+)%\s+kernel/i);
+                if (!match) continue;
+                processes.push({
+                    name: match[2].trim(),
+                    percent: parseFloat(match[1]),
+                    userPercent: parseFloat(match[3]),
+                    kernelPercent: parseFloat(match[4])
+                });
+            }
+            if (processes.length) info.topCpuProcesses = processes;
+        }
+
+        function parsePowerUseStats(text, info) {
+            const components = [];
+            const uids = [];
+            const commitSection = () => {
+                if (components.length) info.powerComponents = components.sort((a, b) => b.mah - a.mah).slice(0, 10);
+                if (uids.length) info.topUidPower = uids.sort((a, b) => b.mah - a.mah).slice(0, 10);
+            };
+            let inGlobal = false;
+            let inPowerSection = false;
+            for (const raw of text.split('\n')) {
+                parseUidPackageLine(raw, info);
+                const line = raw.trim();
+                if (line.startsWith('Estimated power use (mAh):')) {
+                    commitSection();
+                    components.length = 0;
+                    uids.length = 0;
+                    inPowerSection = true;
+                    inGlobal = false;
+                    continue;
+                }
+                if (!line) { inPowerSection = false; inGlobal = false; }
+                if (!inPowerSection) continue;
+                const drainMatch = RE_POWER_DRAIN.exec(raw);
+                if (drainMatch) {
+                    info.computedDrainMah = parseFloat(drainMatch[1]);
+                    info.actualDrainMah = parseFloat(drainMatch[2]);
+                }
+                if (line === 'Global') {
+                    inGlobal = true;
+                    continue;
+                }
+                if (inGlobal) {
+                    const componentMatch = RE_POWER_COMPONENT.exec(raw);
+                    if (componentMatch) {
+                        components.push({
+                            name: componentMatch[1],
+                            mah: parseFloat(componentMatch[2]),
+                            durationSeconds: componentMatch[3] ? parseDurationSeconds(componentMatch[3]) : null
+                        });
+                        continue;
+                    }
+                    if (line.startsWith('UID ') || (line && !line.startsWith('('))) {
+                        inGlobal = false;
+                    }
+                }
+
+                const uidMatch = RE_UID_POWER.exec(raw);
+                if (uidMatch) {
+                    uids.push({
+                        uid: uidMatch[1].trim(),
+                        mah: parseFloat(uidMatch[2]),
+                        foregroundMah: uidMatch[3] ? parseFloat(uidMatch[3]) : null,
+                        backgroundMah: uidMatch[4] ? parseFloat(uidMatch[4]) : null,
+                        foregroundServiceMah: uidMatch[5] ? parseFloat(uidMatch[5]) : null
+                    });
+                }
+            }
+
+            commitSection();
+        }
+
+        function parseUidPackageLine(raw, info) {
+            const starMatch = raw.match(/\*\s+([A-Za-z0-9_.:]+)\s*\/\s*(u\d+a\d+|\d+)\b/);
+            if (starMatch) {
+                rememberUidPackage(info, starMatch[2], starMatch[1]);
+                return;
+            }
+            const appMatch = raw.match(/\bapp=\d+:([A-Za-z0-9_.:]+)\/(u\d+a\d+)\b/);
+            if (appMatch) {
+                rememberUidPackage(info, appMatch[2], appMatch[1]);
+                return;
+            }
+            const historyMatch = raw.match(/\b(?:top|fg|longwake)=(u\d+a\d+):"([^"]+)"/);
+            if (historyMatch) {
+                rememberUidPackage(info, historyMatch[1], historyMatch[2]);
+            }
+        }
+
+        function rememberUidPackage(info, uid, packageName) {
+            if (!info.uidPackages) info.uidPackages = {};
+            const cleanPackage = String(packageName || '').trim().split(':')[0];
+            if (!uid || !cleanPackage) return;
+            if (!info.uidPackages[uid]) info.uidPackages[uid] = cleanPackage;
+        }
+
+        function parseWakelockLeaders(text, info) {
+            const kernel = [];
+            const partial = [];
+            let mode = null;
+
+            for (const raw of text.split('\n')) {
+                const line = raw.trim();
+                if (line === 'All kernel wake locks:') {
+                    mode = 'kernel';
+                    continue;
+                }
+                if (line === 'All partial wake locks:') {
+                    mode = 'partial';
+                    continue;
+                }
+                if (!line && mode) {
+                    mode = null;
+                    continue;
+                }
+
+                if (mode === 'kernel') {
+                    const match = RE_KERNEL_WAKELOCK_LEADER.exec(raw);
+                    if (match) {
+                        kernel.push({
+                            name: match[1].trim(),
+                            seconds: parseDurationSeconds(match[2]),
+                            count: parseInt(match[3], 10)
+                        });
+                    }
+                } else if (mode === 'partial') {
+                    const match = RE_PARTIAL_WAKELOCK_LEADER.exec(raw);
+                    if (match) {
+                        partial.push({
+                            name: match[1].trim(),
+                            seconds: parseDurationSeconds(match[2]),
+                            count: parseInt(match[3], 10)
+                        });
+                    }
+                }
+            }
+
+            if (kernel.length) {
+                info.kernelWakelocks = kernel.sort((a, b) => b.seconds - a.seconds).slice(0, 10);
+            }
+            if (partial.length) {
+                info.partialWakelocks = partial.sort((a, b) => b.seconds - a.seconds).slice(0, 10);
+            }
+        }
+
+        function buildUsageDiagnosticsHtml(info, healthPct) {
+            const lines = buildUsageDiagnostics(info, healthPct);
+            if (!lines.length) return '';
+            return `<p><strong>🧭 中文诊断结论</strong></p>` + lines.map(line => `<p>${escHtml(line)}</p>`).join('');
+        }
+
+        function buildUsageDiagnostics(info, healthPct) {
+            const lines = [];
+            if (healthPct != null) {
+                if (healthPct < 70) {
+                    lines.push(`健康度 ${healthPct.toFixed(2)}%，已低于 70%，如果续航明显变差，建议优先考虑售后检测或更换电池。`);
+                } else if (healthPct < 80) {
+                    lines.push(`健康度 ${healthPct.toFixed(2)}%，处于正常衰减区间，建议继续观察续航；低于 70% 再优先考虑更换。`);
+                } else if (healthPct < 90) {
+                    lines.push(`健康度 ${healthPct.toFixed(2)}%，整体仍可用，属于轻中度衰减。`);
+                } else {
+                    lines.push(`健康度 ${healthPct.toFixed(2)}%，容量状态较好。`);
+                }
+            }
+
+            const screenOnShare = percent(info.screenOnDischargeMah, info.totalDischargeMah);
+            if (screenOnShare != null) {
+                const drain = drainRate(info.screenOnDischargeMah, info.screenOnSeconds);
+                const drainText = drain != null ? `，亮屏平均耗电约 ${drain.toFixed(1)} mA` : '';
+                lines.push(`亮屏耗电占比 ${screenOnShare.toFixed(1)}%${drainText}，屏幕与前台使用是本次主要耗电来源。`);
+            }
+
+            if (info.screenBrightnesses && info.screenBrightnesses.length) {
+                const summary = info.screenBrightnesses.slice(0, 5).map(formatScreenBrightnessItem).join('、');
+                const top = info.screenBrightnesses[0];
+                let note = '本次亮屏亮度分布较分散，可结合亮屏耗电和前台应用继续判断。';
+                if ((top.name === 'dark' || top.name === 'dim') && top.percent >= 60) {
+                    note = '本次亮屏主要处于低亮度，不像是高亮度本身导致耗电；可结合刷新率、前台应用、网络和 CPU 负载继续判断。';
+                } else if ((top.name === 'light' || top.name === 'bright') && top.percent >= 50) {
+                    note = '本次亮屏主要处于高亮度，屏幕亮度可能是亮屏耗电的重要因素。';
+                }
+                lines.push(`亮度分布：${summary}，${note}`);
+            }
+
+            const screenOffDrain = drainRate(info.screenOffDischargeMah, info.screenOffSeconds);
+            if (screenOffDrain != null) {
+                const note = screenOffDrain >= 100 ? '偏高，建议检查后台唤醒、定位、同步和常驻应用。' : '处于可接受范围。';
+                lines.push(`息屏平均耗电约 ${screenOffDrain.toFixed(1)} mA，${note}`);
+            }
+
+            const screenDozeShare = percent(info.screenDozeDischargeMah, info.totalDischargeMah);
+            if (screenDozeShare != null) {
+                lines.push(`屏幕 Doze 耗电 ${info.screenDozeDischargeMah.toFixed(1)} mAh，占总耗电 ${screenDozeShare.toFixed(1)}%，通常对应息屏显示或低功耗显示阶段。`);
+            }
+
+            const deepDozeShare = percent(info.deviceDeepDozeDischargeMah, info.totalDischargeMah);
+            if (deepDozeShare != null) {
+                lines.push(`设备深度 Doze 耗电 ${info.deviceDeepDozeDischargeMah.toFixed(1)} mAh，占总耗电 ${deepDozeShare.toFixed(1)}%，可用于判断长时间待机阶段的系统耗电占比。`);
+            }
+
+            if (info.powerComponents && info.powerComponents.length) {
+                const top = formatTopMahItems(info.powerComponents.slice(0, 3).map(item => [item.name, item.mah]));
+                lines.push(`耗电构成前三：${top}，优先对应排查屏幕、CPU、基带、音频或相机等硬件/系统模块。`);
+            }
+
+            if (info.topUidPower && info.topUidPower.length) {
+                const stats = { totalDischargeMah: info.totalDischargeMah };
+                const top = formatTopUidPower(info.topUidPower.slice(0, 3), info.uidPackages || {}, stats);
+                lines.push(`最高耗电 UID：${top}，需要结合系统 UID/应用包名映射定位具体应用或系统服务。`);
+            }
+
+            if (info.partialWakelockSeconds != null) {
+                const share = percent(info.partialWakelockSeconds, info.timeOnBatterySeconds);
+                const shareText = share != null ? `，占统计周期 ${share.toFixed(1)}%` : '';
+                lines.push(`部分唤醒锁约 ${formatDurationCn(info.partialWakelockSeconds)}${shareText}，如果待机耗电高，应优先排查后台常驻和同步任务。`);
+            }
+
+            if (info.kernelWakelocks && info.kernelWakelocks.length) {
+                const item = info.kernelWakelocks[0];
+                const count = item.count != null ? `、${item.count} 次` : '';
+                lines.push(`Kernel 唤醒锁最长：${item.name} ${formatDurationCn(item.seconds)}${count}，用于判断系统内核或硬件链路是否长期阻止休眠。`);
+            }
+
+            if (info.partialWakelocks && info.partialWakelocks.length) {
+                const item = info.partialWakelocks[0];
+                const count = item.count != null ? `、${item.count} 次` : '';
+                lines.push(`应用部分唤醒锁最长：${formatUidName(item.name, info.uidPackages || {})} ${formatDurationCn(item.seconds)}${count}，这是后台耗电排查的首要线索。`);
+            }
+
+            if (info.wifiMulticastWakelockSeconds != null) {
+                const count = info.wifiMulticastWakelockCount != null ? `${info.wifiMulticastWakelockCount} 次、` : '';
+                lines.push(`WiFi Multicast 唤醒锁 ${count}累计约 ${formatDurationCn(info.wifiMulticastWakelockSeconds)}，投屏、局域网发现或部分应用可能增加后台耗电。`);
+            }
+
+            if (info.connectivityChanges != null && info.connectivityChanges >= 200) {
+                lines.push(`连接切换 ${info.connectivityChanges} 次，网络环境频繁变化可能增加基带和 Wi-Fi 耗电。`);
+            }
+
+            if (info.bluetoothDrainMah != null) {
+                const parts = [`蓝牙耗电 ${info.bluetoothDrainMah.toFixed(1)} mAh`];
+                if (info.bluetoothScanSeconds != null) parts.push(`扫描约 ${formatDurationCn(info.bluetoothScanSeconds)}`);
+                if (info.bluetoothReceivedBytes != null && info.bluetoothSentBytes != null) {
+                    parts.push(`收发 ${formatBytes(info.bluetoothReceivedBytes)}/${formatBytes(info.bluetoothSentBytes)}`);
+                }
+                let message = `${parts.join('，')}，耳机、手环、车机或持续扫描都可能增加后台耗电。`;
+                if (info.bluetoothConnectedDevices && info.bluetoothConnectedDevices.length) {
+                    message += `已连接蓝牙设备：${info.bluetoothConnectedDevices.slice(0, 3).join('、')}。`;
+                }
+                lines.push(message);
+            }
+
+            if (info.cellularReceivedBytes != null && info.cellularSentBytes != null) {
+                const details = [`移动网络流量 ${formatBytes(info.cellularReceivedBytes)} 下行 / ${formatBytes(info.cellularSentBytes)} 上行`];
+                if (info.cellularKernelActiveSeconds != null) details.push(`蜂窝内核活跃约 ${formatDurationCn(info.cellularKernelActiveSeconds)}`);
+                if (info.cellularRxSeconds != null) details.push(`蜂窝接收约 ${formatDurationCn(info.cellularRxSeconds)}`);
+                lines.push(`${details.join('，')}，mobile_radio 高耗电时优先检查弱网、热点、后台联网和长时间移动数据传输。`);
+            }
+
+            if (info.wifiReceivedBytes != null && info.wifiSentBytes != null) {
+                const scanText = info.wifiScanSeconds != null && info.wifiScanSeconds > 0 ? `，Wi-Fi 扫描约 ${formatDurationCn(info.wifiScanSeconds)}` : '';
+                lines.push(`Wi-Fi 流量 ${formatBytes(info.wifiReceivedBytes)} 下行 / ${formatBytes(info.wifiSentBytes)} 上行${scanText}，用于判断本次网络耗电主要来自 Wi-Fi 还是移动网络。`);
+            }
+
+            if (info.cpuLoad1m != null && info.cpuLoad5m != null && info.cpuLoad15m != null) {
+                const load = `${info.cpuLoad1m.toFixed(2)}/${info.cpuLoad5m.toFixed(2)}/${info.cpuLoad15m.toFixed(2)}`;
+                if (info.topCpuProcesses && info.topCpuProcesses.length) {
+                    const top = info.topCpuProcesses.slice(0, 3).map(item => `${item.name} ${item.percent.toFixed(1)}%`).join('、');
+                    lines.push(`当前 CPU 负载 ${load}，瞬时最高进程：${top}；需要和 cpu 模块耗电一起判断是否有高计算负载。`);
+                } else {
+                    lines.push(`当前 CPU 负载 ${load}，需要结合 cpu 模块耗电判断是否存在高计算负载。`);
+                }
+            }
+
+            if (info.temperatureC != null) {
+                lines.push(`抓包温度 ${info.temperatureC.toFixed(1)} ℃（${getTemperatureText(info.temperatureC)}）。`);
+            }
+
+            if (info.maxChargingCurrentMa != null && info.maxChargingVoltageMv != null) {
+                const watts = (info.maxChargingCurrentMa * info.maxChargingVoltageMv) / 1000000;
+                if (info.statusCode === 5 && watts <= 10) {
+                    lines.push(`当前满电附近充电功率上限约 ${watts.toFixed(2)} W，符合满电维护或低功率补电状态。`);
+                } else {
+                    lines.push(`当前系统报告充电功率上限约 ${watts.toFixed(2)} W。`);
+                }
+            }
+
+            return lines.length ? lines : ['本次 bugreport 未提供足够的结构化耗电统计，只能显示容量快照。'];
+        }
+
+        function percent(value, total) {
+            if (value == null || total == null || total <= 0) return null;
+            return (value / total) * 100;
+        }
+
+        function drainRate(dischargeMah, seconds) {
+            if (dischargeMah == null || seconds == null || seconds <= 0) return null;
+            return dischargeMah / (seconds / 3600);
+        }
+
+        function parseDurationSeconds(text) {
+            let total = 0;
+            const pattern = /([\d.]+)\s*(ms|d|h|m|s)(?![a-zA-Z])/g;
+            let match;
+            while ((match = pattern.exec(text)) !== null) {
+                const value = parseFloat(match[1]);
+                const unit = match[2];
+                if (unit === 'd') total += value * 86400;
+                  else if (unit === 'h') total += value * 3600;
+                else if (unit === 'm') total += value * 60;
+                else if (unit === 's') total += value;
+                else if (unit === 'ms') total += value / 1000;
+            }
+            return total;
+        }
+
+        function formatTopMahItems(items) {
+            return items.map(([name, mah]) => `${name} ${mah.toFixed(1)} mAh`).join('、');
+        }
+
+        function formatMahWithShare(mah, totalDischargeMah) {
+            const share = percent(mah, totalDischargeMah);
+            const shareText = share != null ? `，占总耗电 ${share.toFixed(1)}%` : '';
+            return `${mah.toFixed(1)} mAh${shareText}`;
+        }
+
+        function formatTopUidPower(items, uidPackages, stats) {
+            return items.map(item => {
+                const amount = formatMahWithShare(item.mah, stats.totalDischargeMah);
+                return `${formatUidLabel(item.uid, uidPackages)} ${amount}${formatUidPowerDetail(item)}`;
+            }).join('、');
+        }
+
+        function formatUidPowerDetail(item) {
+            const parts = [];
+            if (item.foregroundMah != null) parts.push(`前台 ${item.foregroundMah.toFixed(1)} mAh`);
+            if (item.backgroundMah != null) parts.push(`后台 ${item.backgroundMah.toFixed(1)} mAh`);
+            if (item.foregroundServiceMah != null) parts.push(`前台服务 ${item.foregroundServiceMah.toFixed(1)} mAh`);
+            return parts.length ? `（${parts.join(' / ')}）` : '';
+        }
+
+        function formatScreenBrightnessItem(item) {
+            const labels = {
+                dark: '低亮度',
+                dim: '较低亮度',
+                medium: '中等亮度',
+                light: '较高亮度',
+                bright: '高亮'
+            };
+            return `${labels[item.name] || item.name}(${item.name}) ${item.percent.toFixed(1)}%`;
+        }
+
+        function parseDataSizeBytes(text) {
+            const match = String(text || '').match(/([\d.]+)\s*(B|KB|MB|GB)\b/i);
+            if (!match) return null;
+            const multipliers = { B: 1, KB: 1024, MB: 1024 * 1024, GB: 1024 * 1024 * 1024 };
+            return Math.round(parseFloat(match[1]) * multipliers[match[2].toUpperCase()]);
+        }
+
+        function formatBytes(value) {
+            const units = [
+                ['GB', 1024 * 1024 * 1024],
+                ['MB', 1024 * 1024],
+                ['KB', 1024],
+                ['B', 1]
+            ];
+            for (const [unit, size] of units) {
+                if (value >= size || unit === 'B') {
+                    const amount = value / size;
+                    return unit === 'B' ? `${Math.round(amount)} B` : `${amount.toFixed(2)} ${unit}`;
+                }
+            }
+            return `${value} B`;
+        }
+
+        function formatUidLabel(uid, uidPackages) {
+            const packageName = uidPackages[uid];
+            return packageName ? `${uid}(${packageName})` : uid;
+        }
+
+        function formatUidName(name, uidPackages) {
+            const parts = String(name || '').split(/\s+/, 2);
+            if (!parts[0]) return name;
+            const label = formatUidLabel(parts[0], uidPackages);
+            return parts.length > 1 ? `${label} ${parts[1]}` : label;
+        }
+
+        function formatDurationCn(seconds) {
+            const total = Math.floor(seconds);
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            if (hours) return `${hours}小时${minutes}分钟`;
+            if (minutes) return `${minutes}分钟`;
+            return `${total}秒`;
+        }
+
+        function getBatteryStatusText(code) {
+            return { 1: '未知', 2: '充电中', 3: '放电中', 4: '未充电', 5: '已充满' }[code] || `未知状态(${code})`;
+        }
+
+        function getBatteryHealthText(code) {
+            return { 1: '未知', 2: '良好', 3: '过热', 4: '电池故障', 5: '过压', 6: '未知错误', 7: '过冷' }[code] || `未知健康码(${code})`;
+        }
+
+        function getCapacityLevelText(code) {
+            return { 1: '严重低电', 2: '低电', 3: '正常', 4: '高电', 5: '满电' }[code] || `未知等级(${code})`;
+        }
+
+        function getTemperatureText(value) {
+            if (value >= 45) return '过高，建议停止高负载并降温';
+            if (value >= 40) return '偏高，建议减少边充边用';
+            if (value < 0) return '过低，低温会影响续航和充电';
+            return '正常';
+        }
+
+        function getPowerSourceText(info) {
+            const sources = [];
+            if (info.acPowered) sources.push('AC 电源');
+            if (info.usbPowered) sources.push('USB');
+            if (info.wirelessPowered) sources.push('无线充电');
+            if (info.dockPowered) sources.push('底座');
+            if (sources.length) return sources.join('、');
+            if (info.acPowered === false || info.usbPowered === false || info.wirelessPowered === false) {
+                return '电池供电或未检测到外接电源';
+            }
+            return '';
         }
 
         function escHtml(s) {

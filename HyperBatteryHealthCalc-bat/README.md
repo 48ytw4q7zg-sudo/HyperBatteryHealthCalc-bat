@@ -14,6 +14,11 @@ HyperBatteryHealthCalc-bat 是一款用于分析小米/HyperOS/MIUI Android 设�
 - 全端 `designCapacity` 检查统一使用 `!= null && > 0`（falsey-safe），防止零值静默跳过
 - `BatteryExtractor._parse_stats_text` 容量值使用 `int(float())` 二层转换防御非整数字符串
 
+**v2.2 (真实 bugreport 中文诊断增强)** 改进要点：
+- 基于真实小米 15 Pro bugreport 验证，新增蓝牙耗电/扫描/连接设备、移动网络流量与蜂窝活跃时间、Wi-Fi 流量、CPU 负载和高占用进程解析
+- CLI、GUI、Web 三端都会展示“中文诊断结论”，不再只输出电池健康度
+- 满电低功率场景会解释为“满电维护或低功率补电状态”，避免把 100% 电量下的 8W 上限误读成充电异常
+
 **v2 (Q-CR Omega)** 重构要点：
 - 提取 `battery_core.py` 共享模块，消除 CLI/GUI 间 175+ 行重复代码
 - 三端统一评分逻辑（`_RATING_TABLE` 5档查找表），消除边界不一致
@@ -26,7 +31,8 @@ HyperBatteryHealthCalc-bat 是一款用于分析小米/HyperOS/MIUI Android 设�
 - **当前容量提取** — 从 `Statistics since last charge:` 统计区块提取 `Min learned battery capacity` 作为当前实际容量
 - **健康度计算** — `(当前实际容量 / 设计容量) × 100%`，带五档评级（极佳/良好/正常衰减/建议更换/超出设计容量）
 - **设备信息识别** — 提取设备型号（`ro.product.marketname` 优先，`ro.product.model` 备用）
-- **电池生命周期追踪** — 提取充电循环次数、估算满充容量、上次/最小/最大学习容量、系统报告满充容量
+- **电池生命周期追踪** — 提取充电循环次数、估算满充容量、上次/最小/最大学习容量、系统报告满充容量、当前电量计数和充电状态
+- **中文耗电诊断** — 解析亮屏/息屏耗电、屏幕亮度分布、Doze、平均耗电电流、部分唤醒锁、WiFi Multicast、连接切换、UID 前台/后台耗电拆分、蓝牙耗电/扫描/连接设备、移动网络流量、Wi-Fi 流量、CPU 负载、温度和充电功率，输出可读建议
 - **嵌套 ZIP 解析** — 自动穿透外层 ZIP 找到内层诊断 ZIP，支持提前退出
 - **本地离线运行** — 所有计算在本地完成，数据不上传
 
@@ -71,13 +77,13 @@ HyperBatteryHealthCalc-bat/
 
 ## 各文件详细说明
 
-### 1. `battery_core.py` — 共享核心模块（211 行）⚠️ v2 新增
+### 1. `battery_core.py` — 共享核心模块 ⚠️ v2 新增
 
 **被 `battery_calc.py` 和 `battery_gui.py` 共同引用**。包含三大组件：
 
-#### 1.1 `BatteryInfo` 数据类（第 20-48 行）
+#### 1.1 `BatteryInfo` 数据类
 
-电池信息数据容器，11 个字段 + 3 个计算属性。与 v1 的 CLI/GUI 分别定义不同，v2 仅此单一定义——CLI 和 GUI 都 `from battery_core import BatteryInfo`。
+电池信息数据容器已经从早期“11 个容量字段”扩展为“容量 + 硬件状态 + 耗电诊断”三层。与 v1 的 CLI/GUI 分别定义不同，v2 起仅此单一定义——CLI 和 GUI 都 `from battery_core import BatteryInfo`。
 
 | # | 字段 | 类型 | 来源文件 | 说明 |
 |----|------|------|---------|------|
@@ -93,12 +99,25 @@ HyperBatteryHealthCalc-bat/
 | 10 | `max_learned_capacity` | `int \| None` | `bugreport*.txt` 统计区块 | 最大学习容量 |
 | 11 | `statistics` | `str \| None` | `bugreport*.txt` 统计区块 | 原始统计文本 |
 
-**三个计算属性**：
-- `has_design_capacity` → `bool`: `design_capacity is not None and design_capacity > 0`
-- `current_capacity` → `Optional[int]`: 返回 `min_learned_capacity`
-- `health_percentage` → `Optional[float]`: `(min_learned / design_capacity) * 100`
+**扩展诊断字段分组**：
 
-#### 1.2 评分逻辑（第 54-76 行）
+| 分组 | 代表字段 | 用途 |
+|------|----------|------|
+| 当前硬件快照 | `charge_counter`, `battery_level`, `voltage_mv`, `temperature_c`, `status_code`, `health_code`, `max_charging_current_ma`, `max_charging_voltage_mv` | 解释当前电量、温度、系统健康码、充电来源和满电低功率补电 |
+| 屏幕/待机耗电 | `screen_on_seconds`, `screen_off_seconds`, `screen_on_discharge_mah`, `screen_off_discharge_mah`, `screen_doze_discharge_mah`, `device_deep_doze_discharge_mah`, `screen_brightnesses` | 判断亮屏、息屏、屏幕亮度分布、屏幕 Doze、深度 Doze 的耗电占比 |
+| 唤醒锁与连接 | `partial_wakelock_seconds`, `kernel_wakelocks`, `partial_wakelocks`, `wifi_multicast_wakelock_seconds`, `connectivity_changes` | 排查后台常驻、内核唤醒、投屏/局域网发现和网络频繁切换 |
+| UID 应用耗电 | `top_uid_power`, `uid_packages`, `foreground_mah`, `background_mah`, `foreground_service_mah` | 找出高耗电应用/系统 UID，并区分前台、后台、前台服务耗电 |
+| 网络/蓝牙 | `cellular_received_bytes`, `cellular_sent_bytes`, `cellular_kernel_active_seconds`, `wifi_received_bytes`, `wifi_sent_bytes`, `bluetooth_drain_mah`, `bluetooth_connected_devices` | 区分移动网络、Wi-Fi、蓝牙设备和扫描耗电 |
+| CPU 快照 | `cpu_load_1m`, `cpu_load_5m`, `cpu_load_15m`, `top_cpu_processes` | 输出当前 CPU 负载和瞬时高占用进程 |
+
+**主要计算属性**：
+- `has_design_capacity` → `bool`: `design_capacity is not None and design_capacity > 0`
+- `current_capacity` → `Optional[int]`: 优先返回 `min_learned_capacity`；满电且缺少学习容量时可用 `charge_counter` 兜底
+- `current_capacity_source` → `str`: 说明容量来源
+- `health_percentage` → `Optional[float]`: `(min_learned / design_capacity) * 100`
+- `usage_diagnostics` → `list[str]`: 面向用户的中文诊断结论
+
+#### 1.2 评分逻辑
 
 三端统一的五档评分查找表（不可变 `tuple`），每个元组为 `(下界, 上界, 评级文本, 十六进制色值)`：
 
@@ -118,9 +137,9 @@ _RATING_TABLE: tuple[tuple[float, float, str, str], ...] = (
 - `get_rating_text(percentage: float) -> str`：线性查找返回中文评级
 - `get_rating_color(percentage: float) -> str`：线性查找返回十六进制色值
 
-#### 1.3 `BatteryExtractor` 核心提取器类（第 82-211 行）
+#### 1.3 `BatteryExtractor` 核心提取器类
 
-逐行流式处理 ZIP。10 个预编译正则（类变量，避免重复编译）。关键方法：
+逐行流式处理 ZIP。预编译正则作为类变量，避免重复编译。关键方法：
 
 ```
 extract(zip_path) → BatteryInfo
@@ -130,11 +149,11 @@ extract(zip_path) → BatteryInfo
   │     ├── _find_file('bugreport', '.txt')
   │     ├── _parse_health_stream() → 设计容量/循环次数/满充容量
   │     ├── _parse_bugreport_stream() → 设备名/时间/统计区块
-  │     │     └── _parse_stats_text() → 4项学习容量
+  │     │     └── _parse_stats_text() → 学习容量 + 屏幕亮度/Doze/耗电构成/唤醒锁/网络/蓝牙/CPU 诊断
   │     └── [提前退出] has_design_capacity && current_capacity → break
 ```
 
-> Web 版 JS 的 `parseBugreportText()` / `parseStatsText()` 与 Python 的 `_parse_bugreport_stream()` / `_parse_stats_text()` 逻辑等价，评分表 `RATING_TABLE` 也与 Python 一致。
+> Web 版 JS 的 `parseBugreportText()` / `parseStatsText()` / `buildUsageDiagnostics()` 与 Python 的 `_parse_bugreport_stream()` / `_parse_stats_text()` / `usage_diagnostics` 逻辑保持同向，评分表 `RATING_TABLE` 也与 Python 一致。
 
 ---
 
@@ -453,7 +472,7 @@ document.addEventListener('DOMContentLoaded', function () {
              content = await innerEntry.getData(new zip.TextWriter())
              // extractDeviceInfoFromText(content) → deviceName/deviceModel
              // extractDataFromText(content) → reportTime + statistics
-             // extractBatteryCapacityFromStatistics(statistics) → 4项学习容量
+             // extractBatteryCapacityFromStatistics(statistics) → 学习容量 + 中文诊断字段
 
          await innerReader.close()
 
@@ -505,9 +524,9 @@ return { reportTime, device: {name, model, code}, statistics }
 
 **注意**：`extractDataFromText` 中的设备信息提取与 `extractDeviceInfoFromText` **有重复**——两个函数都做了设备信息的正则提取。前者用于填充全局 `autoExtractedInfo` 中的 `deviceName`/`deviceModel`；后者返回独立的 `device` 对象（且在 `processZipFile` 中被调用但未实际使用其 `device` 返回值）。这是历史演进中形成的冗余。
 
-##### 3.4.7 `extractBatteryCapacityFromStatistics(statisticsText)` — 容量提取（第 682-713 行）
+##### 3.4.7 `extractBatteryCapacityFromStatistics(statisticsText)` — 容量与诊断提取
 
-从统计文本中逐行提取 4 项容量数据。与 CLI/GUI 版的 `_parse_stats_text()` 逻辑等價，但实现为纯 JavaScript：
+从统计文本中逐行提取学习容量、硬件快照、屏幕/Doze、唤醒锁、网络、蓝牙和 CPU 诊断字段。与 CLI/GUI 版的 `_parse_stats_text()` 方向一致，但实现为纯 JavaScript：
 
 ```js
 const result = {};
@@ -552,7 +571,7 @@ return result;  // 未匹配的字段不出现（undefined）
           content = entry.getData(new zip.TextWriter())
           extractedData = extractDataFromText(content)   // 复用 extractDataFromText
           statistics = extractedData.statistics
-          stats = extractBatteryCapacityFromStatistics(statistics)  // 4项容量
+          stats = extractBatteryCapacityFromStatistics(statistics)  // 学习容量 + 中文诊断字段
 
           currentCapacity = stats.minLearnedCapacity || autoExtractedInfo.minLearnedCapacity
           └── 优先用本次提取的，否则回退到全局 autoExtractedInfo 中的
@@ -566,7 +585,8 @@ return result;  // 未匹配的字段不出现（undefined）
 
             [构建大型 HTML 字符串 resultMessage]
               ├── 📊 基本信息 (设备型号/诊断时间/设计容量/当前容量/健康度)
-              ├── 🔧 电池硬件信息 (估算容量/上次/最小/最大学习容量/循环次数)
+              ├── 🔧 电池硬件信息 (估算容量/学习容量/电量计数/温度/充电状态/循环次数)
+              ├── 🧭 中文诊断结论 (健康度/亮屏息屏/亮度分布/Doze/唤醒锁/蓝牙/网络/CPU/充电功率)
               ├── 捐助链接
               └── 📖 电池详细信息折叠区
                     ├── 🔍 电池关键信息翻译 (translateBatteryInfoOnly)
@@ -919,7 +939,7 @@ DOMContentLoaded
         │                 └── [bugreport .txt]:
         │                       ├── extractDeviceInfoFromText(content)
         │                       ├── extractDataFromText(content)
-        │                       └── extractBatteryCapacityFromStatistics(statistics)
+        │                       └── extractBatteryCapacityFromStatistics(statistics) → 学习容量 + 中文诊断字段
         │
         ├── [成功] processZipFile(file, designCapacity)  → 自动继续
         └── [失败] 显示手动输入框 + 计算按钮
@@ -934,6 +954,7 @@ DOMContentLoaded
         ├── [构建 HTML 报告字符串]
         │     ├── 📊 基本信息
         │     ├── 🔧 电池硬件信息
+        │     ├── 🧭 中文诊断结论
         │     ├── translateBatteryInfoOnly(statistics) → 翻译对照
         │     └── 原始统计数据 (折叠区)
         └── showResult(div, html, true) → innerHTML + className

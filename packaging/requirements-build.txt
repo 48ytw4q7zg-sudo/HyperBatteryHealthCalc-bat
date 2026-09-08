@@ -1,0 +1,3 @@
+# Build tools only. The portable application uses the bundled standard library.
+# Exact resolved dependency versions are recorded beside every build's evidence.
+pyinstaller==6.22.2

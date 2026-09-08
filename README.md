@@ -55,7 +55,8 @@ HyperBatteryHealthCalc-main/
 - **当前容量提取**: 从 `Statistics since last charge:` 统计区块提取 `Min learned battery capacity` 作为当前实际容量
 - **健康度计算**: `(当前实际容量 / 设计容量) × 100%`，五档评级
 - **设备信息识别**: 提取设备型号 (`ro.product.marketname` 优先，`ro.product.model` 备用)
-- **电池生命周期追踪**: 充电循环次数、估算满充容量、上次/最小/最大学习容量、系统报告满充容量
+- **电池生命周期追踪**: 充电循环次数、估算满充容量、上次/最小/最大学习容量、系统报告满充容量、当前电量计数和充电状态
+- **中文耗电诊断**: 不只计算健康度，还解析亮屏/息屏耗电、屏幕亮度分布、Doze、唤醒锁、WiFi Multicast、连接切换、UID 前台/后台耗电拆分、蓝牙耗电/扫描/连接设备、移动网络流量、Wi-Fi 流量、CPU 负载和高占用进程，生成中文建议
 - **嵌套 ZIP 解析**: 自动穿透外层 ZIP 找到内层诊断 ZIP
 
 ### 五档评级标准
@@ -73,6 +74,8 @@ HyperBatteryHealthCalc-main/
 ---
 
 ## 使用方法
+
+当前功能收口说明与验证边界见 [功能完整性记录](docs/functional-completion.md)。网页和桌面版的手动容量会覆盖自动值；命令行 `--capacity` 保持“缺少设计容量时使用默认值”的含义。部分数据可以保留为报告，但不会据此伪造健康度。
 
 ### 获取诊断文件
 
@@ -200,13 +203,13 @@ parseZipAndRender(file, manualCapacity) [async]
 
 ---
 
-### 2. `HyperBatteryHealthCalc-bat/battery_core.py` — 共享核心模块（214 行）
+### 2. `HyperBatteryHealthCalc-bat/battery_core.py` — 共享核心模块
 
 被 `battery_calc.py` (CLI) 和 `battery_gui.py` (GUI) 共同引用。包含三大组件：
 
-#### 2.1 `BatteryInfo` 数据类（第 20-48 行）
+#### 2.1 `BatteryInfo` 数据类
 
-11 个字段 + 3 个计算属性：
+当前数据模型已经从“容量快照”扩展为“容量 + 硬件状态 + 耗电诊断”三层。基础容量字段如下：
 
 | 字段 | 类型 | 来源 | 说明 |
 |------|------|------|------|
@@ -222,10 +225,23 @@ parseZipAndRender(file, manualCapacity) [async]
 | `max_learned_capacity` | `int\|None` | 统计区块 | 最大学习容量 |
 | `statistics` | `str\|None` | 统计区块 | 原始统计文本 |
 
+扩展诊断字段按来源分组：
+
+| 分组 | 代表字段 | 用途 |
+|---|---|---|
+| 当前硬件快照 | `charge_counter`, `battery_level`, `voltage_mv`, `temperature_c`, `status_code`, `health_code`, `max_charging_current_ma`, `max_charging_voltage_mv` | 解释当前电量、温度、充电状态和满电低功率补电 |
+| 屏幕/待机耗电 | `screen_on_seconds`, `screen_off_seconds`, `screen_on_discharge_mah`, `screen_off_discharge_mah`, `screen_doze_discharge_mah`, `device_deep_doze_discharge_mah`, `screen_brightnesses` | 判断亮屏、息屏、屏幕亮度分布、屏幕 Doze 和深度 Doze 的耗电占比 |
+| 唤醒锁与连接 | `partial_wakelock_seconds`, `kernel_wakelocks`, `partial_wakelocks`, `wifi_multicast_wakelock_seconds`, `connectivity_changes` | 判断后台常驻、投屏/局域网发现、弱网或频繁切换导致的耗电 |
+| UID 应用耗电 | `top_uid_power`, `uid_packages`, `foreground_mah`, `background_mah`, `foreground_service_mah` | 找出高耗电应用/系统 UID，并区分前台、后台、前台服务耗电 |
+| 网络/蓝牙 | `cellular_received_bytes`, `cellular_sent_bytes`, `cellular_kernel_active_seconds`, `wifi_received_bytes`, `wifi_sent_bytes`, `bluetooth_drain_mah`, `bluetooth_connected_devices` | 区分移动网络、Wi-Fi、蓝牙设备和扫描造成的耗电 |
+| CPU 快照 | `cpu_load_1m`, `cpu_load_5m`, `cpu_load_15m`, `top_cpu_processes` | 输出当前 CPU 负载和瞬时高占用进程 |
+
 计算属性:
 - `has_design_capacity` → `design_capacity is not None and design_capacity > 0`
-- `current_capacity` → 返回 `min_learned_capacity`
+- `current_capacity` → 优先返回 `min_learned_capacity`；满电且缺少学习容量时可用 `charge_counter` 兜底
+- `current_capacity_source` → 说明当前容量来自最小学习容量还是满电电量计数
 - `health_percentage` → `(min_learned / design_capacity) * 100`
+- `usage_diagnostics` → 返回面向用户的中文诊断结论列表
 
 #### 2.2 评分逻辑（第 54-76 行）
 
@@ -245,9 +261,9 @@ _RATING_TABLE = (
 - `get_rating_text(percentage) -> str`
 - `get_rating_color(percentage) -> str`
 
-#### 2.3 `BatteryExtractor` 提取器类（第 84-214 行）
+#### 2.3 `BatteryExtractor` 提取器类
 
-逐行流式处理 ZIP，10 个预编译正则。调用链：
+逐行流式处理 ZIP，使用预编译正则提取容量、硬件快照和耗电诊断。调用链：
 
 ```
 extract(zip_path) → BatteryInfo
@@ -267,6 +283,10 @@ extract(zip_path) → BatteryInfo
   │     │           ├── RE_LAST_LEARNED → last_learned_capacity
   │     │           ├── RE_MIN_LEARNED → min_learned_capacity
   │     │           └── RE_MAX_LEARNED → max_learned_capacity
+  │     │           ├── 屏幕亮度/Doze/耗电构成/唤醒锁
+  │     │           ├── 移动网络/Wi-Fi 流量和活跃时间
+  │     │           ├── 蓝牙耗电/扫描/连接设备
+  │     │           └── CPU 负载和高占用进程
   │     └── [提前退出] has_design_capacity && current_capacity → break
 ```
 
