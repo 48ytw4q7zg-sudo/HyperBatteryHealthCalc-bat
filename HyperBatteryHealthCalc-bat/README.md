@@ -57,6 +57,8 @@ HyperBatteryHealthCalc-bat/
 ├── index.html                   # 网页版前端（纯浏览器端运行，含内嵌 CSS/JS）
 ├── run.bat                      # Windows 命令行启动脚本（调用 VBS 无窗口启动）
 ├── run_gui.vbs                  # Windows GUI 无窗口启动脚本（VBScript 三级降级）
+├── report_io.py                  # 统一原子写入与编码策略（CLI/GUI 公用）
+├── report_io_smoke.py            # 报告写入与源文件保护冒烟脚本
 ├── js/
 │   ├── zip.js                   # zip.js 库（开发版，完整注释，~300KB+）
 │   └── zip.min.js               # zip.js 库（压缩版，index.html 实际引用）
@@ -1012,6 +1014,21 @@ GUI 界面操作：选择诊断文件（下拉列表或"浏览..."）→ 可选�
 ### 网页版方式
 
 直接用浏览器打开 `index.html`，选择诊断 ZIP 文件即可自动分析。如果自动提取设计容量失败，页面会显示手动输入框和"计算"按钮，手动输入设计容量后点击即可。结果页面包含折叠/展开的"电池详细信息"（翻译对照 + 原始数据）。
+
+### 报告写入完整性验收
+
+执行独立无副作用脚本，验证 `report_io.py` 在 CLI/GUI 路径下的边界行为：
+- 原子写入落盘后是否稳定保留末尾换行与 UTF-8/GBK 兼容行为
+- 是否正确拒绝将输入 `.zip` 覆盖成 `.txt` 报告
+- 是否阻止自覆盖源文件
+- 是否清理临时文件残留
+- 是否会自动创建输出目录（用于嵌套目标路径）
+
+```bash
+python report_io_smoke.py
+```
+
+脚本默认输出 `report_io_smoke.json`，执行成功返回码为 `0`；失败返回码为 `1`，便于 CI/本地批处理联动。
 
 ---
 

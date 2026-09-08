@@ -45,6 +45,7 @@ def _write_text_atomic(
         raise ValueError("The report is empty")
 
     target = resolve_app_path(Path(destination))
+    target.parent.mkdir(parents=True, exist_ok=True)
     normalized = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     if normalize_for_notepad:
         normalized = normalized.replace("\n", "\r\n")
