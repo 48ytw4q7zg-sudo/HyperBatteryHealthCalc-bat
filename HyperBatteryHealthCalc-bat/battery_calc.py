@@ -286,6 +286,8 @@ def write_report_atomic(output_path: Path, content: str) -> None:
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='\n', dir=output_path.parent, prefix='.battery-report-', suffix='.tmp', delete=False) as stream:
             temporary_path = Path(stream.name)
             stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary_path, output_path)
     finally:
         if temporary_path is not None:
