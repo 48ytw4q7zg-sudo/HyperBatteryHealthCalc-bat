@@ -3,8 +3,16 @@
 __pycache__/
 *.py[cod]
 
-# User-provided diagnostic archives may contain personal device data.
-HyperBatteryHealthCalc-bat/input/*.zip
-HyperBatteryHealthCalc-bat/input/*.7z
-HyperBatteryHealthCalc-bat/input/*.tar
-HyperBatteryHealthCalc-bat/input/*.tar.gz
+# Local settings and temporary acceptance data are not release sources.
+.env
+.env.*
+!.env.example
+/.browser-acceptance-*/
+
+# Protect unpacked diagnostics as well as archives; retain the empty directory marker.
+/HyperBatteryHealthCalc-bat/input/*
+!/HyperBatteryHealthCalc-bat/input/.gitkeep
+/HyperBatteryHealthCalc-bat/battery_smoke.json
+
+# Per-machine agent permissions and settings stay local.
+**/.claude/settings.local.json

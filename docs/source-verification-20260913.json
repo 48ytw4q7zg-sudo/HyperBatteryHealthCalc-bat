@@ -1,0 +1,133 @@
+{
+  "schema_version": "source-verification/v1",
+  "date_local": "2026-09-13",
+  "timezone": "Asia/Singapore",
+  "project": "48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat",
+  "status": "source-verified-build-blocked",
+  "scope": "Source-level optimization, regression and independent review; not frozen-release acceptance.",
+  "target_branch": "master",
+  "github_push_allowed": true,
+  "github_uploaded": false,
+  "optimization_scope_result": "All reproduced actionable findings in the reviewed code paths were closed.",
+  "review_harness": "Codex only",
+  "requested_model": "gpt-6-astra",
+  "requested_reasoning_effort": "max",
+  "model_eligibility_reference": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+  "review_runs": [
+    {
+      "id": "01a0955d-c459-7a63-af6c-351563bea4b9",
+      "role": "Independent source, integrity, metadata and batch review",
+      "selection": "Inherited Codex GPT-6/max"
+    },
+    {
+      "id": "01a0956c-2cbd-7660-a0e1-1027b74f88a9",
+      "role": "Independent OCS protocol review; battery implementation/source tests",
+      "selection": "Explicit gpt-6-astra/max"
+    },
+    {
+      "id": "01a09563-0445-7371-8149-441aa67c0859",
+      "role": "OCS implementation/regressions and independent health review",
+      "selection": "Inherited Codex GPT-6/max"
+    }
+  ],
+  "validations": [
+    {
+      "name": "battery_core",
+      "passed": 6,
+      "skipped": 2,
+      "note": "Original real-phone fixture absent; current root-web static guard passed separately."
+    },
+    {
+      "name": "functional_completion",
+      "passed": 31
+    },
+    {
+      "name": "portable",
+      "passed": 11
+    },
+    {
+      "name": "gui_export",
+      "passed": 20
+    },
+    {
+      "name": "web_logic_and_real_crc",
+      "passed": 945,
+      "unit": "assertions",
+      "real_crc_scenarios": 25
+    },
+    {
+      "name": "independent_python_integrity",
+      "passed": 17,
+      "crc_subscenarios": 8
+    },
+    {
+      "name": "pythonw_source_selftest",
+      "passed": 19,
+      "unit": "checks",
+      "frozen": false,
+      "exit_code": 0,
+      "note": "Python 3.14.4 x64; Tcl/Tk 8.6.15; Windows build 26200."
+    }
+  ],
+  "reviewed_hashes_sha256": {
+    "index.html": "8069C1A8218C07E390A85A66B30141AF484AC1DF3D47891546451A27449AA7BA",
+    "HyperBatteryHealthCalc-bat/index.html": "DAD572A2A1290693FC60D1A86D798C99165F246651DB62FF9FD3BC636723C463",
+    "HyperBatteryHealthCalc-bat/battery_core.py": "755A19D725BD59F28AA7491371A6597F5675238C3A4AAE11215F04A12621DB82",
+    "HyperBatteryHealthCalc-bat/battery_smoke.py": "FFA35B9FAC14BF6F260141FD3349137B6A8BB8007DAE5F643F3BAFB5257CE450",
+    "HyperBatteryHealthCalc-bat/battery_calc.py": "e17f9799cc56cf53b861719df81ac334c1a367e51b9da1bb4166faa60f50c9a8",
+    "HyperBatteryHealthCalc-bat/battery_gui.py": "0a9c8bdac49fb66054940957d2d1036a154979dbbf98a006244c2db45bb8f66a",
+    "HyperBatteryHealthCalc-bat/report_io.py": "E37AD77A60B275038F577F9B4442E1096C7CE6C2B59AAE67C91969677F5E5FE8",
+    "HyperBatteryHealthCalc-bat/portable_entry.py": "cd84f69b63110eaaec00c180d436bb6c139382bb351b025dd8fe94fb6928de6f",
+    "test_functional_completion.py": "46B7FD0A474932741EF242C635C8E9C6A394B647B95850A42A47B6534E7BE771",
+    "test_web_logic.cjs": "1BD647C53791FC0095968ADBC5DED00B9E84A593E56AFEE35A811047092E4435",
+    "packaging/verify_portable.py": "E1332A2F1047316F07DBE9BB19709D84A9CF1DA17197377E9740AA336C520757",
+    "build_windows.ps1": "25A3F0D143293DDE85C294DC13749283418160D0BDA39BF0EF3A7423E8B1D4AE",
+    "packaging/PORTABLE_README.txt": "2FB70E44B87E9C2695B72CFD6CEA0FD4625901AC702C0E6277A591456A1B4BAA",
+    "packaging/test_gui_export.py": "10E5AD641F24543231675AD931BE36FA788E33710F4AF6E62E7E7F1BB3427073",
+    ".gitignore": "FA88B4D14CBEB35E92FB1A94280422F5738D53F2A26116EA594F88F1E91EE9A2",
+    "js/zip.min.js": "D7395D4D19E8ECC95C5EE65A7679EB76F6B46F5AA21AC892B1C35C2FB12CE8D4",
+    "HyperBatteryHealthCalc-bat/js/zip.min.js": "D7395D4D19E8ECC95C5EE65A7679EB76F6B46F5AA21AC892B1C35C2FB12CE8D4"
+  },
+  "build": {
+    "started": false,
+    "new_bundle_verified": false,
+    "launch_result": "Rejected before process creation by host execution policy",
+    "reported_reason": "blocked by policy",
+    "retried_via_alternate_mechanism": false
+  },
+  "acceptance_limits": {
+    "windows_10_x64": {
+      "physically_tested": false,
+      "user_waived": true,
+      "blocking": false
+    },
+    "physical_usb": {
+      "verified": false,
+      "user_waived": false
+    },
+    "real_provider_accounts": {
+      "applicable": false
+    },
+    "real_phone_fixture": "Absent at the original path; two real-fixture tests skipped",
+    "browser_download_to_disk": "Not verified; source Blob bytes tested, browser download-event interface timed out"
+  },
+  "pending_cleanup": [
+    "Host denied deletion of .browser-acceptance-7b1ecfc3789f4e7890cb74657fbfc2ca; retained and excluded from Git"
+  ],
+  "remaining_steps": [
+    "Resolve host execution restriction for authorized isolated Windows builds",
+    "Build and verify fresh frozen bundles against current source hashes",
+    "Refresh delivery artifact paths and hashes",
+    "Clean superseded artifacts without removing required evidence or user data",
+    "Commit/push reviewed sources and publish fresh portable assets after release acceptance"
+  ],
+  "live_env_or_credentials_read": false,
+  "global_model_or_provider_defaults_changed": false,
+  "local_agent_settings_tracking": {
+    "path": "HyperBatteryHealthCalc-bat/.claude/settings.local.json",
+    "included_in_new_source_tree": false,
+    "local_file_preserved": true,
+    "contents_read": false,
+    "history_rewritten": false
+  }
+}

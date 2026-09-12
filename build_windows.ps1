@@ -45,8 +45,9 @@ $venvPython = Join-Path $venv 'Scripts\python.exe'
 $sourceFiles = @(
     'HyperBatteryHealthCalc-bat\battery_core.py', 'HyperBatteryHealthCalc-bat\battery_gui.py',
     'HyperBatteryHealthCalc-bat\battery_calc.py', 'HyperBatteryHealthCalc-bat\portable_entry.py',
-    'HyperBatteryHealthCalc-bat\report_io.py', 'packaging\windows.spec',
-    'packaging\requirements-build.txt', 'packaging\test_portable.py', 'packaging\verify_portable.py',
+    'HyperBatteryHealthCalc-bat\report_io.py', 'HyperBatteryHealthCalc-bat\battery_smoke.py',
+    'packaging\windows.spec', 'packaging\requirements-build.txt',
+    'packaging\test_portable.py', 'packaging\test_gui_export.py', 'packaging\verify_portable.py',
     'packaging\PORTABLE_README.txt', 'packaging\BUILD_WINDOWS.md', 'build_windows.ps1',
     'test_battery_core.py', 'test_functional_completion.py', 'test_web_logic.cjs',
     'index.html', 'HyperBatteryHealthCalc-bat\index.html', 'LICENSE'

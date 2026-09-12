@@ -359,6 +359,17 @@
         #calculate-btn {
             display: none;
         }
+
+        #export-report-btn {
+            margin-top: 10px;
+            display: none;
+        }
+
+        #export-report-btn[disabled] {
+            background: linear-gradient(135deg, #a0aec0, #718096);
+            box-shadow: none;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 
@@ -414,6 +425,7 @@
         <p style="color:red;">(拨号界面中输入" * "以开始抓包)</p>
 
         <button id="calculate-btn">计算</button>
+        <button id="export-report-btn" disabled>导出报告 (txt)</button>
 
         <div id="status" class="status"></div>
         <div id="result" class="result"></div>
@@ -433,7 +445,7 @@
     <script>
         const RATING_TABLE = [
             [100.0001, Infinity, '超出设计容量（可能为冗余设计或第三方电池）', '#e67e22'],
-            [90,       100,      '极佳状态',                               '#27ae60'],
+            [90,       100.0001,'极佳状态',                               '#27ae60'],
             [80,       90,       '良好状态',                               '#f39c12'],
             [70,       80,       '正常衰减',                               '#e67e22'],
             [0,        70,       '建议考虑更换电池',                         '#e74c3c']
@@ -509,18 +521,31 @@
 
         let analysisRevision = 0;
         let lastParsedFile = null;
+        let detectedInitialCapacity = null;
+        let lastExportReportText = '';
+        let lastExportReportFile = '';
+        let lastExportReportInputs = null;
 
         document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('calculate-btn').addEventListener('click', calculateBatteryCapacity);
             document.getElementById('zip-file').addEventListener('change', handleFileSelect);
+            document.getElementById('export-report-btn').addEventListener('click', saveReportAsTxt);
+            document.getElementById('initial-capacity').addEventListener('input', handleCapacityInput);
         });
 
         function handleFileSelect() {
+            detectedInitialCapacity = null;
             analysisRevision += 1;
             lastParsedFile = null;
+            clearExportReport();
             document.getElementById('initial-capacity').value = '';
             const file = document.getElementById('zip-file').files[0];
             const resultDiv = document.getElementById('result');
+
+            if (!hasZipRuntime()) {
+                showError(resultDiv, "当前页面未成功加载解压组件，请检查网络并刷新页面重试");
+                return;
+            }
 
             autoExtractedInfo = {
                 designCapacity: null,
@@ -631,7 +656,8 @@
         }
 
         async function parseHealthTxtEntry(entry, infoTarget) {
-            const content = await entry.getData(new zip.TextWriter());
+            assertTextEntryWithinLimit(entry);
+            const content = await entry.getData(new zip.TextWriter(), { checkSignature: true });
             const designCapacityMatch = content.match(/batteryFullChargeDesignCapacityUah\s*[:=]\s*(\d+)/);
             const designCapacity = designCapacityMatch ? Number(designCapacityMatch[1]) / 1000 : null;
             if (Number.isFinite(designCapacity) && designCapacity > 0 && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
@@ -683,11 +709,13 @@
         }
 
         async function parseBugreportTxtEntry(entry, infoTarget) {
-            const content = await entry.getData(new zip.TextWriter());
+            assertTextEntryWithinLimit(entry);
+            const content = await entry.getData(new zip.TextWriter(), { checkSignature: true });
             return enrichInfoFromBugreportText(content, infoTarget);
         }
 
         function getAutoInitialCapacityCandidate(infoTarget) {
+            if (infoTarget.designCapacitySource === '手动输入') return detectedInitialCapacity;
             if (Number.isFinite(infoTarget.designCapacity) && infoTarget.designCapacity > 0) {
                 return {
                     value: infoTarget.designCapacity,
@@ -706,8 +734,10 @@
         // 提取设备信息并分析
         async function extractDeviceInfo(file) {
             const revision = ++analysisRevision;
+            const reportInputs = captureReportInputs();
             const infoTarget = autoExtractedInfo;
-            const isCurrent = () => revision === analysisRevision;
+            const isCurrent = () => revision === analysisRevision && reportInputsMatch(reportInputs);
+            clearExportReport();
             let reader = null;
             let hasHealthFile = false;
             let hasBugreportFile = false;
@@ -738,9 +768,14 @@
                         continue;
                     }
                     if (isZipEntry(entryName)) {
+                        if (typeof entry.uncompressedSize === 'number' && entry.uncompressedSize > 512 * 1024 * 1024) {
+                            parseIssueCount += 1;
+                            console.warn(`跳过过大的内层压缩包: ${entryName}`, entry.uncompressedSize);
+                            continue;
+                        }
                         let innerZipBlob = null;
                         try {
-                            innerZipBlob = await entry.getData(new zip.BlobWriter('application/zip'));
+                            innerZipBlob = await entry.getData(new zip.BlobWriter('application/zip'), { checkSignature: true });
                             if (!isCurrent()) return;
                         } catch (innerZipError) {
                             parseIssueCount += 1;
@@ -802,6 +837,7 @@
                 // 如果成功提取到设备信息，自动计算
                 if (!isCurrent()) return;
                 lastParsedFile = file;
+                detectedInitialCapacity = getAutoInitialCapacityCandidate(infoTarget);
                 infoTarget.parseIssueCount = parseIssueCount;
                 document.getElementById('manual-input-container').style.display = 'block';
                 document.getElementById('calculate-btn').style.display = 'block';
@@ -817,9 +853,10 @@
                     document.getElementById('manual-input-container').style.display = 'block';
                     document.getElementById('calculate-btn').style.display = 'block';
                     document.getElementById('status').style.display = 'none';
+                    clearExportReport();
 
                     if (hasHealthFile || hasBugreportFile) {
-                        showResult(resultDiv, buildPartialAnalysisReport(infoTarget, '未检测到原始设计容量，请手动输入后计算健康度。'), false);
+                        showPartialAnalysisReport(infoTarget, file, reportInputs, '未检测到原始设计容量，请手动输入后计算健康度。');
                     } else if (parseIssueCount > 0) {
                         showError(resultDiv, `部分日志文件解析失败（${parseIssueCount} 个），请尝试重新导出完整诊断包`);
                     } else if (!hasHealthFile && !hasBugreportFile) {
@@ -837,6 +874,7 @@
                 document.getElementById('manual-input-container').style.display = 'block';
                 document.getElementById('calculate-btn').style.display = 'block';
                 document.getElementById('status').style.display = 'none';
+                clearExportReport();
                 const resultDiv = document.getElementById('result');
                 showError(resultDiv, `提取失败：${escHtml(error && error.message ? error.message : '无法解析该文件')}`);
             } finally {
@@ -859,7 +897,7 @@
                 const marketNameMatch = line.match(/\[ro\.product\.marketname\]:\s*\[([^\]]+)\]/);
                 if (marketNameMatch) {
                     deviceInfo.marketName = marketNameMatch[1].trim();
-                    console.log("找到设备名称:", deviceInfo.marketName);
+
                     continue;
                 }
 
@@ -867,7 +905,7 @@
                 const modelMatch = line.match(/\[ro\.product\.model\]:\s*\[([^\]]+)\]/);
                 if (modelMatch) {
                     deviceInfo.model = modelMatch[1].trim();
-                    console.log("找到设备型号:", deviceInfo.model);
+
                     continue;
                 }
 
@@ -875,7 +913,7 @@
                 const deviceMatch = line.match(/\[ro\.product\.device\]:\s*\[([^\]]+)\]/);
                 if (deviceMatch) {
                     deviceInfo.device = deviceMatch[1].trim();
-                    console.log("找到设备代码:", deviceInfo.device);
+
                     continue;
                 }
 
@@ -1025,19 +1063,19 @@
                 // 提取上次学习容量
                 const lastLearnedMatch = line.match(/Last learned battery capacity:\s*([\d.]+)\s*mAh/i);
                 if (lastLearnedMatch) {
-                    result.lastLearnedCapacity = Math.floor(parseFloat(lastLearnedMatch[1]));
+                    result.lastLearnedCapacity = Math.round(parseFloat(lastLearnedMatch[1]));
                 }
 
                 // 提取最小学习容量
                 const minLearnedMatch = line.match(/Min learned battery capacity:\s*([\d.]+)\s*mAh/i);
                 if (minLearnedMatch) {
-                    result.minLearnedCapacity = Math.floor(parseFloat(minLearnedMatch[1]));
+                    result.minLearnedCapacity = Math.round(parseFloat(minLearnedMatch[1]));
                 }
 
                 // 提取最大学习容量
                 const maxLearnedMatch = line.match(/Max learned battery capacity:\s*([\d.]+)\s*mAh/i);
                 if (maxLearnedMatch) {
-                    result.maxLearnedCapacity = Math.floor(parseFloat(maxLearnedMatch[1]));
+                    result.maxLearnedCapacity = Math.round(parseFloat(maxLearnedMatch[1]));
                 }
             }
 
@@ -1100,6 +1138,12 @@
             const fileInput = document.getElementById('zip-file');
             const initialCapacityInput = document.getElementById('initial-capacity');
             const resultDiv = document.getElementById('result');
+            clearExportReport();
+
+            if (!hasZipRuntime()) {
+                showError(resultDiv, "当前页面未成功加载解压组件，请检查网络并刷新页面重试");
+                return;
+            }
 
             if (!fileInput.files || fileInput.files.length === 0) {
                 showError(resultDiv, "请选择一个诊断文件");
@@ -1142,7 +1186,7 @@
             }
 
             showStatus("正在解析电池数据，请稍候...");
-            processZipFile(file, resolvedInitialCapacity);
+            await processZipFile(file, resolvedInitialCapacity);
         }
 
         function buildPartialAnalysisReport(info, message) {
@@ -1158,10 +1202,34 @@
         }
 
         // 处理文件
+        function hasPartialReportData(info) {
+            return Object.entries(info).some(([key, value]) => {
+                if (key === 'parseIssueCount' || key === 'designCapacitySource') return false;
+                if (key === 'designCapacity' && info.designCapacitySource === '手动输入') return false;
+                if (Array.isArray(value)) return value.length > 0;
+                if (typeof value === 'number') return Number.isFinite(value);
+                if (typeof value === 'boolean') return true;
+                if (typeof value === 'string') return value.trim().length > 0;
+                return value !== null && typeof value === 'object' && Object.keys(value).length > 0;
+            });
+        }
+
+        function showPartialAnalysisReport(info, file, inputs, message) {
+            const report = buildPartialAnalysisReport(info, message);
+            showResult(document.getElementById('result'), report, false);
+            if (hasPartialReportData(info)) {
+                setExportReport(report, file.name, info, inputs);
+            } else {
+                clearExportReport();
+            }
+        }
+
         async function processZipFile(file, initialCapacity) {
             const resultDiv = document.getElementById('result');
+            const revision = ++analysisRevision;
+            const reportInputs = captureReportInputs();
             const infoTarget = autoExtractedInfo;
-            const isCurrent = () => infoTarget === autoExtractedInfo;
+            const isCurrent = () => revision === analysisRevision && infoTarget === autoExtractedInfo;
             let hasBugreportTxt = false;
             let hasParsableBugreport = false;
             let parseBugreportFailureCount = 0;
@@ -1271,8 +1339,12 @@
                 }
 
                 showStatus("正在计算电池容量百分比...");
-                if (infoTarget.parseIssueCount > 0) resultMessage += `<p>部分日志解析失败（${infoTarget.parseIssueCount} 处），报告仅包含已成功提取的数据。</p>`;
+                const warning = infoTarget.parseIssueCount > 0 ? `<p>部分日志解析失败（${infoTarget.parseIssueCount} 处），报告仅包含已成功提取的数据。</p>` : '';
+                if (warning) {
+                    resultMessage += warning;
+                }
                 showResult(resultDiv, resultMessage, true);
+                setExportReport(resultMessage, file.name, autoExtractedInfo, reportInputs);
                 return true;
             };
 
@@ -1295,6 +1367,7 @@
                     return renderBugreportResult(statistics, capacityInfo);
                 } catch (error) {
                     parseBugreportFailureCount += 1;
+                    infoTarget.parseIssueCount += 1;
                     console.warn(`解析${sourceName}的 bugreport 日志失败:`, error);
                     return false;
                 }
@@ -1303,12 +1376,13 @@
             if (lastParsedFile === file) {
                 if (!renderBugreportResult(infoTarget.statistics, getCurrentCapacityInfo(infoTarget))) {
                     const reasons = getCurrentCapacityUnavailableReasons(infoTarget);
-                    showResult(resultDiv, buildPartialAnalysisReport(infoTarget, reasons.join('；') || '容量数据不完整，暂时无法计算健康度。'), false);
+                    showPartialAnalysisReport(infoTarget, file, reportInputs, reasons.join('；') || '容量数据不完整，暂时无法计算健康度。');
                 }
                 document.getElementById('status').style.display = 'none';
                 return;
             }
 
+            infoTarget.parseIssueCount = 0;
             let reader = null;
             try {
                 reader = new zip.ZipReader(new zip.BlobReader(file));
@@ -1328,11 +1402,17 @@
                     }
 
                     if (isZipEntry(entry.filename)) {
+                        if (typeof entry.uncompressedSize === 'number' && entry.uncompressedSize > 512 * 1024 * 1024) {
+                            infoTarget.parseIssueCount += 1;
+                            console.warn(`跳过过大的内层压缩包: ${entry.filename}`, entry.uncompressedSize);
+                            continue;
+                        }
                         showStatus("正在解压内层文件...");
                         let innerZipBlob = null;
                         try {
-                            innerZipBlob = await entry.getData(new zip.BlobWriter('application/zip'));
+                            innerZipBlob = await entry.getData(new zip.BlobWriter('application/zip'), { checkSignature: true });
                         } catch (innerZipError) {
+                            infoTarget.parseIssueCount += 1;
                             console.warn(`读取内层压缩包失败: ${entry.filename}`, innerZipError);
                             continue;
                         }
@@ -1357,6 +1437,7 @@
                                 }
                             }
                         } catch (innerReadError) {
+                            infoTarget.parseIssueCount += 1;
                             console.warn(`读取内层文件目录失败: ${entry.filename}`, innerReadError);
                             continue;
                         } finally {
@@ -1370,6 +1451,7 @@
                 if (!isCurrent()) return;
                 if (!hasBugreportTxt) {
                     showError(resultDiv, "未检测到 bugreport 文本日志（缺少可解析容量的统计段），请上传完整诊断 zip 后重试。");
+                    clearExportReport();
                     return;
                 }
                 if (!hasParsableBugreport) {
@@ -1377,15 +1459,17 @@
                         ? `（已尝试解析 ${parseBugreportFailureCount} 个候选 bugreport 文件，均未成功）`
                         : '';
                     showError(resultDiv, `检测到 bugreport 文本日志，但文件解析失败，请确认导出的 bugreport 内容完整。${retryHint}`);
+                    clearExportReport();
                     return;
                 }
                 const reasons = getCurrentCapacityUnavailableReasons(autoExtractedInfo);
                 const reasonText = reasons.length ? `当前容量字段缺失：${reasons.join('；')}` : '无法从文件中定位可用于计算的容量字段';
-                showResult(resultDiv, buildPartialAnalysisReport(infoTarget, `${reasonText}。请确保设备接近充满电（建议 95%+）后再导出诊断。`), false);
+                showPartialAnalysisReport(infoTarget, file, reportInputs, `${reasonText}。请确保设备接近充满电（建议 95%+）后再导出诊断。`);
             } catch (error) {
                 if (!isCurrent()) return;
                 console.error("处理文件时发生错误:", error);
                 showError(resultDiv, `处理文件时发生错误：${escHtml(error && error.message ? error.message : '请确保文件格式正确')}`);
+                clearExportReport();
             } finally {
                 if (reader) {
                     try { await reader.close(); } catch (closeError) { console.warn('关闭诊断包失败', closeError); }
@@ -1429,9 +1513,12 @@
             translatedText = translatedText.replace(/(\d+h\s*\d+m\s*\d+s)/g, '<span class="time-value">$1</span>');
             translatedText = translatedText.replace(/(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})/g, '<span class="time-value">$1</span>');
 
-            Object.keys(batteryTranslations).forEach(english => {
+            // Longer keys first so "Discharge" cannot rewrite "Screen off discharge".
+            Object.keys(batteryTranslations)
+                .sort((a, b) => b.length - a.length)
+                .forEach(english => {
                 const chinese = batteryTranslations[english];
-                const regex = new RegExp(english, 'g');
+                const regex = new RegExp(english.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
                 translatedText = translatedText.replace(regex, `<span class="battery-key">${english}</span>\n    (${chinese})`);
             });
 
@@ -1667,7 +1754,10 @@
             if (!info.uidPackages) info.uidPackages = {};
             const cleanPackage = String(packageName || '').trim().split(':')[0];
             if (!uid || !cleanPackage) return;
-            if (!info.uidPackages[uid]) info.uidPackages[uid] = cleanPackage;
+            const existing = info.uidPackages[uid];
+            if (existing == null || (String(existing).includes(':') && !cleanPackage.includes(':'))) {
+                info.uidPackages[uid] = cleanPackage;
+            }
         }
 
         function parseWakelockLeaders(text, info) {
@@ -2071,6 +2161,135 @@
                 }
             }
             return "未知状态";
+        }
+
+        function captureReportInputs() {
+            return {
+                file: document.getElementById('zip-file').files[0],
+                capacity: document.getElementById('initial-capacity').value.trim()
+            };
+        }
+
+        function reportInputsMatch(inputs) {
+            const current = captureReportInputs();
+            return !!inputs && inputs.file === current.file && inputs.capacity === current.capacity;
+        }
+
+        function handleCapacityInput() {
+            clearExportReport();
+            if (document.getElementById('result').style.display === 'block') {
+                showStatus('容量已变更，请重新计算后保存报告');
+            }
+        }
+
+        function assertTextEntryWithinLimit(entry) {
+            if (Number.isFinite(entry.uncompressedSize) && entry.uncompressedSize > 256 * 1024 * 1024) {
+                throw new Error('单个文本日志解压后超过 256 MB，已跳过以避免浏览器内存不足');
+            }
+        }
+
+        function clearExportReport() {
+            lastExportReportInputs = null;
+            lastExportReportText = '';
+            lastExportReportFile = '';
+            const exportBtn = document.getElementById('export-report-btn');
+            if (!exportBtn) return;
+            exportBtn.disabled = true;
+            exportBtn.style.display = 'none';
+        }
+
+        function hasZipRuntime() {
+            return !!(typeof zip !== 'undefined' && zip && typeof zip.ZipReader === 'function' && typeof zip.BlobReader === 'function');
+        }
+
+        function normalizeExportFileName(fileName) {
+            const baseName = (fileName || 'battery-report')
+                .replace(/\.zip$/i, '')
+                .replace(/[\u0000-\u001f\u007f\\/:*?"<>|]+/g, '_')
+                .replace(/\s+/g, '_');
+            const safeBase = Array.from(baseName || 'battery-report').slice(0, 100).join('');
+            const suffix = new Date().toISOString().replace(/[^\d]/g, '').slice(0, 14);
+            return `${safeBase}_${suffix}.txt`;
+        }
+
+        function htmlToPlainText(html) {
+            const container = document.createElement('div');
+            container.innerHTML = (html || '')
+                .replace(/<(button|script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/(?:td|th)>/gi, '$&\t')
+                .replace(/<\/(?:p|div|section|article|li|h[1-6]|tr|pre|details|summary)>/gi, '$&\n');
+            return (container.textContent || '')
+                .replace(/\r\n?/g, '\n')
+                .replace(/[ \t]+\n/g, '\n')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+        }
+
+        function setExportReport(html, sourceFile, info, inputs = captureReportInputs()) {
+            if (!reportInputsMatch(inputs)) {
+                clearExportReport();
+                showStatus('输入已变更，请重新分析或计算后保存报告');
+                return;
+            }
+            const exportText = htmlToPlainText(html);
+            if (!exportText) {
+                clearExportReport();
+                return;
+            }
+            const timestamp = new Date().toLocaleString();
+            const source = sourceFile || 'battery-report';
+            const reportText = [
+                `报告生成时间: ${timestamp}`,
+                `诊断文件: ${source}`,
+                `是否手动输入容量: ${info && info.designCapacitySource === '手动输入' ? '是' : '否'}`,
+                '',
+                exportText,
+                ''
+            ].join('\n');
+            lastExportReportText = reportText;
+            lastExportReportFile = normalizeExportFileName(source);
+            lastExportReportInputs = inputs;
+            const exportBtn = document.getElementById('export-report-btn');
+            if (!exportBtn) return;
+            exportBtn.disabled = false;
+            exportBtn.style.display = 'block';
+        }
+
+        function saveReportAsTxt() {
+            const exportBtn = document.getElementById('export-report-btn');
+            if (!exportBtn) return;
+            if (!lastExportReportText || !lastExportReportFile || !reportInputsMatch(lastExportReportInputs)) {
+                clearExportReport();
+                showStatus('当前报告已失效，请重新分析或计算后保存'); return;
+            }
+            if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' || typeof URL.revokeObjectURL !== 'function') {
+                showStatus('当前环境不支持文件导出（缺少 URL API），请手动复制报告内容'); return;
+            }
+            if (typeof Blob === 'undefined') {
+                showStatus('当前环境不支持文件导出，请手动复制报告内容'); return;
+            }
+            exportBtn.disabled = true;
+            let downloadUrl = null;
+            let anchor = null;
+            try {
+                const windowsText = lastExportReportText.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n');
+                const blob = new Blob(['\uFEFF', windowsText], { type: 'text/plain;charset=utf-8' });
+                downloadUrl = URL.createObjectURL(blob);
+                anchor = document.createElement('a');
+                anchor.href = downloadUrl;
+                anchor.download = lastExportReportFile;
+                anchor.style.display = 'none';
+                document.body.appendChild(anchor);
+                anchor.click();
+                showStatus(`已请求下载报告：${lastExportReportFile}，请在浏览器下载列表查看`);
+            } catch (error) {
+                showStatus(`导出失败：${error && error.message ? error.message : '请稍后重试'}`);
+            } finally {
+                if (anchor && anchor.parentNode) anchor.parentNode.removeChild(anchor);
+                if (downloadUrl) setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+                exportBtn.disabled = !lastExportReportText || !reportInputsMatch(lastExportReportInputs);
+            }
         }
 
         // 显示结果

@@ -377,7 +377,7 @@ class BatteryInfo:
 
 _RATING_TABLE: tuple[tuple[float, float, str, str], ...] = (
     (100.0001, float('inf'), '超出设计容量（可能为冗余设计或第三方电池）', '#e67e22'),
-    (90,       100,          '极佳状态',                                   '#27ae60'),
+    (90,       100.0001,     '极佳状态',                                   '#27ae60'),
     (80,       90,           '良好状态',                                   '#f39c12'),
     (70,       80,           '正常衰减',                                   '#e67e22'),
     (0,        70,           '建议考虑更换电池',                             '#e74c3c'),
@@ -644,6 +644,19 @@ class BatteryExtractor:
         r'\b(?:top|fg|longwake)=(u\d+a\d+):"([^"]+)"'
     )
 
+    # Bound nested-archive memory use; real Xiaomi bugreports stay well below this.
+    _MAX_INNER_ZIP_BYTES = 512 * 1024 * 1024
+
+    def _read_zip_entry_bounded(self, zf: zipfile.ZipFile, name: str) -> bytes:
+        info = zf.getinfo(name)
+        declared = int(getattr(info, 'file_size', 0) or 0)
+        if declared > self._MAX_INNER_ZIP_BYTES:
+            raise ValueError(f'内层归档过大: {declared} bytes')
+        data = zf.read(name)
+        if len(data) > self._MAX_INNER_ZIP_BYTES:
+            raise ValueError(f'内层归档解压后过大: {len(data)} bytes')
+        return data
+
     def extract(self, zip_path: Path) -> BatteryInfo:
         info = BatteryInfo()
         parse_errors: list[str] = []
@@ -655,7 +668,7 @@ class BatteryExtractor:
             if inner_names:
                 for inner_name in inner_names:
                     try:
-                        inner_data = outer_zip.read(inner_name)
+                        inner_data = self._read_zip_entry_bounded(outer_zip, inner_name)
                     except Exception as exc:
                         parse_errors.append(f'内层归档读取失败: {inner_name} ({exc})')
                         continue
@@ -713,16 +726,6 @@ class BatteryExtractor:
             ]
         )
 
-    @staticmethod
-    def _find_file(zf: zipfile.ZipFile, prefix: str, suffix: str) -> Optional[str]:
-        lower_prefix = prefix.lower()
-        lower_suffix = suffix.lower()
-        for name in zf.namelist():
-            lower_name = name.lower()
-            if lower_prefix in lower_name and lower_name.endswith(lower_suffix):
-                return name
-        return None
-
     def _parse_health_stream(self, zf: zipfile.ZipFile, filename: str, info: BatteryInfo) -> None:
         with zf.open(filename) as raw:
             text_stream = io.TextIOWrapper(raw, encoding='utf-8-sig', errors='replace')
@@ -750,6 +753,9 @@ class BatteryExtractor:
                     and info.cycle_count is not None
                     and info.full_capacity is not None
                 ):
+                    # CRC/read failures must surface before the candidate is committed.
+                    while text_stream.read(64 * 1024):
+                        pass
                     break
 
     def _parse_bugreport_stream(self, zf: zipfile.ZipFile, filename: str, info: BatteryInfo) -> None:
@@ -869,7 +875,7 @@ class BatteryExtractor:
                         in_stats = False
                         self._parse_stats_text(info.statistics, info)
                         stats_lines = []
-                    else:
+                    elif len(stats_lines) < 5000:
                         stats_lines.append(line)
 
             if in_stats and stats_lines:
@@ -890,15 +896,15 @@ class BatteryExtractor:
 
         m = self._RE_LAST_LEARNED.search(text)
         if m:
-            info.last_learned_capacity = int(float(m.group(1)))
+            info.last_learned_capacity = round(float(m.group(1)))
 
         m = self._RE_MIN_LEARNED.search(text)
         if m:
-            info.min_learned_capacity = int(float(m.group(1)))
+            info.min_learned_capacity = round(float(m.group(1)))
 
         m = self._RE_MAX_LEARNED.search(text)
         if m:
-            info.max_learned_capacity = int(float(m.group(1)))
+            info.max_learned_capacity = round(float(m.group(1)))
 
         self._parse_usage_stats_text(text, info)
         self._parse_power_use_text(text, info)

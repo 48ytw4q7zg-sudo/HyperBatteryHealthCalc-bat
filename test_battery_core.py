@@ -104,9 +104,9 @@ class BatteryCoreTests(unittest.TestCase):
         self.assertEqual(info.cycle_count, 123)
         self.assertEqual(info.full_capacity, 4625)
         self.assertEqual(info.estimated_capacity, 4680.5)
-        self.assertEqual(info.last_learned_capacity, 4612)
-        self.assertEqual(info.current_capacity, 4599)
-        self.assertAlmostEqual(info.health_percentage, 91.98, places=2)
+        self.assertEqual(info.last_learned_capacity, 4613)
+        self.assertEqual(info.current_capacity, 4600)
+        self.assertAlmostEqual(info.health_percentage, 92.0, places=2)
         self.assertAlmostEqual(info.computed_drain_mah, 123.4, places=2)
         self.assertAlmostEqual(info.actual_drain_mah, 120.0, places=2)
         self.assertEqual(
@@ -329,7 +329,8 @@ class BatteryCoreTests(unittest.TestCase):
 
         self.assertIn("const RATING_TABLE", html)
         self.assertIn("[100.0001, Infinity", html)
-        self.assertIn("Math.floor(parseFloat", html)
+        self.assertIn("Math.round(parseFloat", html)
+        self.assertNotIn("Math.floor(parseFloat", html)
         self.assertIn("当前电池快照", html)
         self.assertIn("batterystats 估算容量", html)
         self.assertIn("Charge counter", html)

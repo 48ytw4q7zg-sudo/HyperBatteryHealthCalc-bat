@@ -39,25 +39,33 @@ def _write_text_atomic(
     newline: str = "\n",
     add_final_newline: bool = True,
     normalize_for_notepad: bool = False,
+    create_parents: bool = True,
 ) -> Path:
     """Atomically write text content to destination path."""
     if not text.strip():
         raise ValueError("The report is empty")
 
     target = resolve_app_path(Path(destination))
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if create_parents:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    elif not target.parent.exists():
+        raise FileNotFoundError(target.parent)
     normalized = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    write_newline = newline
     if normalize_for_notepad:
         normalized = normalized.replace("\n", "\r\n")
+        # Content is already CRLF; disable universal-newline translation
+        # so the writer does not turn each \n into a second \r\n.
+        write_newline = ""
     if add_final_newline:
-        normalized = normalized + newline
+        normalized = normalized + (newline if not normalize_for_notepad else "\r\n")
 
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding=encoding,
-            newline=newline,
+            newline=write_newline,
             prefix=".battery-report-",
             suffix=".tmp",
             dir=target.parent,
@@ -99,4 +107,7 @@ def save_text_report(destination: Path, text: str, source: Path) -> Path:
         raise ValueError("The report cannot replace its diagnostic ZIP")
     if target.suffix.lower() != ".txt":
         raise ValueError("Choose a .txt report filename")
-    return _write_text_atomic(target, text, encoding="utf-8-sig", newline="\r\n", normalize_for_notepad=True, add_final_newline=True)
+    return _write_text_atomic(
+        target, text, encoding="utf-8-sig", newline="\r\n",
+        normalize_for_notepad=True, add_final_newline=True, create_parents=False,
+    )

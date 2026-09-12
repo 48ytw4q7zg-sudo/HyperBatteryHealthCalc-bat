@@ -170,6 +170,16 @@ def main(argv: list[str] | None = None) -> int:
         from battery_calc import main as cli_main
         return cli_main(args)
     if args:
+        if getattr(sys, "frozen", False):
+            try:
+                from tkinter import messagebox
+                messagebox.showerror(
+                    "无法启动",
+                    "请直接双击 HyperBatteryHealthCalc.exe，不要附加命令行参数。\n"
+                    "命令行诊断请使用 HyperBatteryHealthCalc-cli.exe。",
+                )
+            except Exception:
+                pass
         return 2
     from battery_gui import main as gui_main
     gui_main()

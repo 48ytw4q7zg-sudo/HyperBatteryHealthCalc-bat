@@ -14,7 +14,6 @@
 HyperBatteryHealthCalc-main/
 ├── index.html                              # 网页版（纯浏览器端运行）
 ├── js/
-│   ├── zip.js                              # zip.js 开发版（完整注释）
 │   └── zip.min.js                          # zip.js 压缩版（index.html 实际引用）
 ├── HyperBatteryHealthCalc-bat/             # Python 桌面版子项目
 │   ├── battery_core.py                     # ★ 共享核心模块（数据模型/提取器/评分）
@@ -406,7 +405,7 @@ exit /b 0
 
 ---
 
-### 7. `js/zip.js` / `js/zip.min.js` — 浏览器 ZIP 解析库
+### 7. `js/zip.min.js` / `js/zip.min.js` — 浏览器 ZIP 解析库
 
 使用 [@gildas-lormeau/zip.js](https://github.com/gildas-lormeau/zip.js) (BSD 3-Clause 许可)。
 
@@ -502,7 +501,7 @@ exit /b 0
 | 正则引擎 | JS `const RE_*` 顶层声明 | `battery_core` 类变量预编译 | `battery_core` 类变量预编译 |
 | 评分表 | 统一 `RATING_TABLE` | 统一 `_RATING_TABLE` | 统一 `_RATING_TABLE` |
 | 评分边界 | `[100.0001, Infinity]` | `(100.0001, inf)` | `(100.0001, inf)` |
-| 浮点容量处理 | `Math.floor(parseFloat())` | `int(float())` | `int(float())` |
+| 浮点容量处理 | `Math.round(parseFloat())` | `round(float())` | `round(float())` |
 | 提取器提前退出 | ✓ | ✓ | ✓ |
 | 设计容量降级 | 手动输入框 | `--capacity` / 交互输入 | 手动输入框 |
 | fullCapacity 显示 | ✓ | ✓ | ✓ |

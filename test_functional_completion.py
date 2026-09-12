@@ -1,5 +1,7 @@
 import contextlib
 import io
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -13,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent / 'HyperBatteryHealthCalc-bat'))
 from battery_core import BatteryExtractor, BatteryInfo
 from battery_calc import build_parser, main as cli_main, write_report_atomic
 from battery_gui import BatteryHealthApp
+from battery_smoke import main as smoke_main, run_battery_smoke
+from portable_entry import create_synthetic_archive
 
 
 class FunctionalCompletionTests(unittest.TestCase):
@@ -130,7 +134,7 @@ class FunctionalCompletionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'report.txt'
             path.write_text('previous report', encoding='utf8')
-            with patch('battery_calc.os.replace', side_effect=OSError('export unavailable')), self.assertRaises(OSError):
+            with patch('report_io.os.replace', side_effect=OSError('export unavailable')), self.assertRaises(OSError):
                 write_report_atomic(path, 'new report')
             self.assertEqual(path.read_text(encoding='utf8'), 'previous report')
             self.assertEqual(list(Path(directory).glob('.battery-report-*.tmp')), [])
@@ -211,6 +215,259 @@ class FunctionalCompletionTests(unittest.TestCase):
         info = BatteryExtractor().extract(io.BytesIO(corrupt))
         self.assertEqual(info.design_capacity, 5000)
         self.assertEqual(info.health_percentage, 90)
+
+
+    def test_corrupt_health_tail_cannot_publish_early_parsed_values(self):
+        data = io.BytesIO()
+        first = (
+            'batteryFullChargeDesignCapacityUah: 6000000\n'
+            'batteryCycleCount: 1\nbatteryFullChargeUah: 4500000\n'
+        ) + ('padding\n' * 8000)
+        with zipfile.ZipFile(data, 'w', zipfile.ZIP_STORED) as archive:
+            archive.writestr('android.hardware.health-bad.txt', first)
+            archive.writestr(
+                'android.hardware.health-good.txt',
+                'batteryFullChargeDesignCapacityUah: 5000000\n'
+                'batteryCycleCount: 42\nbatteryFullChargeUah: 4500000\n',
+            )
+            archive.writestr(
+                'bugreport.txt',
+                'Statistics since last charge:\nEstimated battery capacity: 5000 mAh\n'
+                'Min learned battery capacity: 4500 mAh\n\n',
+            )
+        corrupt = bytearray(data.getvalue())
+        name_length, extra_length = struct.unpack_from('<HH', corrupt, 26)
+        corrupt[30 + name_length + extra_length + len(first.encode('utf8')) - 1] ^= 1
+        with zipfile.ZipFile(io.BytesIO(corrupt)) as archive:
+            self.assertEqual(archive.testzip(), 'android.hardware.health-bad.txt')
+        info = BatteryExtractor().extract(io.BytesIO(corrupt))
+        self.assertEqual(info.design_capacity, 5000)
+        self.assertEqual(info.current_capacity, 4500)
+        self.assertEqual(info.cycle_count, 42)
+        self.assertEqual(info.full_capacity, 4500)
+        self.assertEqual(info.health_percentage, 90)
+        self.assertEqual(len(info.parse_warnings), 1)
+        self.assertIn('android.hardware.health-bad.txt', info.parse_warnings[0])
+
+    def _assert_smoke_output_rejected(self, samples, destination, error):
+        original = {sample: sample.read_bytes() for sample in samples}
+        output = io.StringIO()
+        with patch('battery_smoke.BatteryExtractor.extract') as extract, contextlib.redirect_stdout(output):
+            result = run_battery_smoke(samples, destination, print_json=True)
+        self.assertEqual(result, 1)
+        extract.assert_not_called()
+        report = json.loads(output.getvalue())
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['error'], error)
+        self.assertEqual(report['exit_code'], 1)
+        self.assertEqual(report['checks'], [error])
+        self.assertEqual(report['checks_count'], 1)
+        self.assertEqual(report['failure_reasons'], [error])
+        for sample, before in original.items():
+            self.assertEqual(sample.read_bytes(), before)
+
+    def test_smoke_rejects_input_output_and_normalized_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / 'synthetic.zip'
+            create_synthetic_archive(source)
+            for destination in (source, folder / 'missing' / '..' / source.name):
+                with self.subTest(destination=destination):
+                    self._assert_smoke_output_rejected([source], destination, 'output_matches_input')
+            self.assertFalse((folder / 'missing').exists())
+
+    def test_smoke_rejects_hardlink_to_any_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            sources = [folder / 'first.zip', folder / 'second.zip']
+            for source in sources:
+                create_synthetic_archive(source)
+            destination = folder / 'report.json'
+            os.link(sources[1], destination)
+            before = destination.read_bytes()
+            self._assert_smoke_output_rejected(sources, destination, 'output_matches_input')
+            self.assertEqual(destination.read_bytes(), before)
+
+    def test_smoke_rejects_non_json_output_before_creating_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / 'synthetic.zip'
+            create_synthetic_archive(source)
+            self._assert_smoke_output_rejected(
+                [source], folder / 'missing' / 'report.txt', 'output_not_json',
+            )
+            self.assertFalse((folder / 'missing').exists())
+
+    def test_smoke_rejects_directory_output_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / 'synthetic.zip'
+            create_synthetic_archive(source)
+            destination = folder / 'report.json'
+            destination.mkdir()
+            self._assert_smoke_output_rejected([source], destination, 'output_is_directory')
+            self.assertEqual(list(destination.iterdir()), [])
+
+    def test_smoke_json_export_preserves_input_and_predictable_temp_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / 'synthetic.zip'
+            create_synthetic_archive(source)
+            before = source.read_bytes()
+            destination = folder / 'result.JSON'
+            alias = destination.with_suffix('.JSON.tmp')
+            os.link(source, alias)
+            result = run_battery_smoke([source], folder / 'uncreated' / '..' / destination.name)
+            self.assertEqual(result, 0)
+            report = json.loads(destination.read_text(encoding='utf8'))
+            self.assertTrue(report['ok'])
+            self.assertEqual(report['output'], str(destination.resolve()))
+            self.assertEqual(report['samples'][str(source.resolve())]['health_percentage'], 90)
+            self.assertEqual(source.read_bytes(), before)
+            self.assertEqual(alias.read_bytes(), before)
+            self.assertFalse((folder / 'uncreated').exists())
+            self.assertEqual(list(folder.glob('.battery-report-*.tmp')), [])
+
+    def test_smoke_atomic_write_failure_preserves_input_and_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / 'synthetic.zip'
+            create_synthetic_archive(source)
+            original = source.read_bytes()
+            destination = folder / 'report.json'
+            previous = b'{"previous": true}\n'
+            destination.write_bytes(previous)
+            with (
+                patch('battery_smoke.write_text_atomic', side_effect=OSError('synthetic save failure')),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+                contextlib.redirect_stderr(io.StringIO()) as errors,
+            ):
+                result = run_battery_smoke([source], destination, print_json=True)
+            self.assertEqual(result, 1)
+            report = json.loads(output.getvalue())
+            self.assertFalse(report['ok'])
+            self.assertEqual(report['error'], 'output_write_failed')
+            self.assertEqual(report['exit_code'], 1)
+            self.assertEqual(report['failure_reasons'], ['output_write_failed'])
+            self.assertIn('synthetic save failure', errors.getvalue())
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(destination.read_bytes(), previous)
+
+    def test_smoke_invalid_output_path_returns_coherent_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / 'synthetic.zip'
+            create_synthetic_archive(source)
+            with patch('battery_smoke.Path.resolve', side_effect=OSError('synthetic path failure')):
+                self._assert_smoke_output_rejected([source], folder / 'report.json', 'output_path_invalid')
+            self.assertFalse((folder / 'report.json').exists())
+
+
+    def test_smoke_no_samples_reports_stable_reason(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'empty.json'
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                result = run_battery_smoke([], destination, print_json=True)
+            self.assertEqual(result, 1)
+            report = json.loads(output.getvalue())
+            self.assertFalse(report['ok'])
+            self.assertEqual(report['error'], 'no_bugreport_samples')
+            self.assertEqual(report['failure_reasons'], ['no_bugreport_samples'])
+            self.assertEqual(report, json.loads(destination.read_text(encoding='utf8')))
+
+    def test_smoke_no_samples_write_failure_keeps_stdout_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'empty.json'
+            with (
+                patch('battery_smoke.write_text_atomic', side_effect=OSError('synthetic write failure')),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+                contextlib.redirect_stderr(io.StringIO()) as errors,
+            ):
+                result = run_battery_smoke([], destination, print_json=True)
+            self.assertEqual(result, 1)
+            report = json.loads(output.getvalue())
+            self.assertFalse(report['ok'])
+            self.assertEqual(report['exit_code'], 1)
+            self.assertEqual(report['error'], 'output_write_failed')
+            self.assertEqual(report['failure_reasons'], ['no_bugreport_samples', 'output_write_failed'])
+            self.assertEqual(report['checks'], ['no_bugreport_samples', 'output_write_failed'])
+            self.assertEqual(report['checks_count'], 2)
+            self.assertIn('synthetic write failure', errors.getvalue())
+            self.assertFalse(destination.exists())
+
+    def test_smoke_missing_and_corrupt_samples_report_reasons(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            for name, content, reason in (
+                ('missing', None, 'sample_not_found'),
+                ('corrupt', b'synthetic invalid zip', 'parse_failed'),
+            ):
+                with self.subTest(name=name):
+                    source = folder / (name + '.zip')
+                    if content is not None:
+                        source.write_bytes(content)
+                    destination = folder / (name + '.json')
+                    with contextlib.redirect_stdout(io.StringIO()) as output:
+                        result = run_battery_smoke([source], destination, print_json=True)
+                    self.assertEqual(result, 1)
+                    report = json.loads(output.getvalue())
+                    self.assertFalse(report['ok'])
+                    self.assertEqual(report['exit_code'], 1)
+                    self.assertEqual(report['failed_samples'], 1)
+                    self.assertEqual(report['failure_reasons'], [reason])
+                    self.assertEqual(report['samples'][str(source.resolve())]['issues'], [reason])
+                    self.assertEqual(report, json.loads(destination.read_text(encoding='utf8')))
+                    if content is not None:
+                        self.assertEqual(source.read_bytes(), content)
+                    else:
+                        self.assertFalse(source.exists())
+
+    def test_smoke_json_takes_priority_over_print_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            for valid in (False, True):
+                with self.subTest(valid=valid):
+                    source = folder / ('valid.zip' if valid else 'missing.zip')
+                    if valid:
+                        create_synthetic_archive(source)
+                    destination = folder / ('valid.json' if valid else 'missing.json')
+                    with contextlib.redirect_stdout(io.StringIO()) as output:
+                        result = smoke_main([
+                            '--zip', str(source), '--output', str(destination),
+                            '--json', '--print-summary',
+                        ])
+                    self.assertEqual(result, 0 if valid else 1)
+                    report = json.loads(output.getvalue())
+                    self.assertEqual(report['ok'], valid)
+                    self.assertEqual(report['exit_code'], result)
+                    self.assertEqual(report, json.loads(destination.read_text(encoding='utf8')))
+
+    def test_smoke_json_with_chinese_error_is_safe_for_legacy_stdout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / '\u7ed3\u679c.json'
+            message = '\u6a21\u62df\u5199\u5165\u5931\u8d25'
+            buffer = io.BytesIO()
+            legacy_stdout = io.TextIOWrapper(buffer, encoding='cp1252', errors='strict', newline='')
+            try:
+                with (
+                    patch('battery_smoke.write_text_atomic', side_effect=OSError(message)),
+                    contextlib.redirect_stdout(legacy_stdout),
+                    contextlib.redirect_stderr(io.StringIO()) as errors,
+                ):
+                    result = run_battery_smoke([], destination, print_json=True)
+                legacy_stdout.flush()
+                encoded = buffer.getvalue()
+            finally:
+                legacy_stdout.detach()
+            self.assertEqual(result, 1)
+            report = json.loads(encoded.decode('ascii'))
+            self.assertFalse(report['ok'])
+            self.assertEqual(report['error_detail'], message)
+            self.assertEqual(report['error'], 'output_write_failed')
+            self.assertEqual(report['exit_code'], 1)
+            self.assertEqual(report['failure_reasons'], ['no_bugreport_samples', 'output_write_failed'])
+            self.assertIn(message, errors.getvalue())
+            self.assertFalse(destination.exists())
 
 
 if __name__ == '__main__':

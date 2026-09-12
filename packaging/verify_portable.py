@@ -72,7 +72,7 @@ def source_checks(work: Path, node: str) -> dict:
         method = getattr(test_battery_core.BatteryCoreTests, name)
         setattr(test_battery_core.BatteryCoreTests, name, unittest.skip("Real diagnostic data is outside portable acceptance scope")(method))
     suite = unittest.defaultTestLoader.loadTestsFromNames(
-        ["test_battery_core", "test_functional_completion", "test_portable"])
+        ["test_battery_core", "test_functional_completion", "test_portable", "test_gui_export"])
     with (work / "python-tests.txt").open("w", encoding="utf-8") as stream:
         result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
     require(result.wasSuccessful(), f"Source tests failed; see {work / 'python-tests.txt'}")
@@ -188,7 +188,25 @@ def bundle_checks(bundle: Path, work: Path, archive_path: Path) -> dict:
               "different_working_directory": True, "self_tests": self_tests,
               "cli_checks": ["help", "default_input_and_export", "relative_unicode_output", "missing_input_exit_1", "corrupt_zip_exit_1"],
               "inventory": before, "zip": {"name": archive_path.name, "bytes": archive_path.stat().st_size, "sha256": digest(archive_path)},
-              "compatibility_limits": ["Only the recorded host Windows build was executed", "No clean Windows 10/11 VM or physical USB filesystem was tested"]}
+              "compatibility_limits": [
+                  "Only the recorded host Windows build was executed",
+                  "Windows 10 x64 was not physically tested; user-waived 2026-09-08; non-blocking",
+                  "Physical USB filesystem was not tested and was not waived",
+              ],
+              "release_status": {
+                  "windows_10_x64": {
+                      "physically_tested": False,
+                      "user_waived": True,
+                      "blocking": False,
+                      "note": "Not physically tested; user-waived 2026-09-08; non-blocking. Target remains Windows 10/11 x64.",
+                  },
+                  "physical_usb": {
+                      "physically_tested": False,
+                      "user_waived": False,
+                      "blocking": False,
+                      "note": "Explicitly unverified. Physical USB filesystem was not tested and was not waived.",
+                  },
+              }}
     save_json(work / "bundle-verification.json", result)
     # Validate absolute containment immediately before each recursive cleanup.
     shutil.rmtree(owned(relocation))

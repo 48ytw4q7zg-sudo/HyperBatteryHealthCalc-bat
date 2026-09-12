@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import io
 import re
 import sys
 import math
@@ -379,6 +378,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.output and all_reports:
         try:
             output_path = resolve_app_path(args.output)
+            if output_path.suffix.lower() == '.zip':
+                raise ValueError('输出路径不能使用 .zip 后缀，以免覆盖诊断包')
             if any(output_path == path.resolve() for path in zip_files):
                 raise ValueError('输出路径不能覆盖输入诊断包')
             write_report_atomic(output_path, '\n---\n'.join(all_reports))

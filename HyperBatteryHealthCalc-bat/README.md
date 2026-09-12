@@ -8,11 +8,11 @@ HyperBatteryHealthCalc-bat 是一款用于分析小米/HyperOS/MIUI Android 设�
 
 **v2.1 (Q-CR Omega 三轮审计)** 改进要点：
 - 浮点数容量正则统一：`(\d+\.?\d*)` 替代 `(\d+)`，防御 Android 系统输出浮点 mAh 值
-- Web 端容量整数化使用 `Math.floor(parseFloat())`，与 Python `int(float())` 行为一致
+- Web 端容量整数化使用 `Math.round(parseFloat())`，与 Python `round(float())` 行为一致
 - Web 端新增系统报告满充容量显示（`fullCapacity`），与 Python 端对齐
 - GUI 端 Windows 高分屏 DPI 感知（`SetProcessDpiAwareness`）
 - 全端 `designCapacity` 检查统一使用 `!= null && > 0`（falsey-safe），防止零值静默跳过
-- `BatteryExtractor._parse_stats_text` 容量值使用 `int(float())` 二层转换防御非整数字符串
+- `BatteryExtractor._parse_stats_text` 容量值使用 `round(float())` 二层转换防御非整数字符串
 
 **v2.2 (真实 bugreport 中文诊断增强)** 改进要点：
 - 基于真实小米 15 Pro bugreport 验证，新增蓝牙耗电/扫描/连接设备、移动网络流量与蜂窝活跃时间、Wi-Fi 流量、CPU 负载和高占用进程解析
@@ -23,7 +23,7 @@ HyperBatteryHealthCalc-bat 是一款用于分析小米/HyperOS/MIUI Android 设�
 - 提取 `battery_core.py` 共享模块，消除 CLI/GUI 间 175+ 行重复代码
 - 三端统一评分逻辑（`_RATING_TABLE` 5档查找表），消除边界不一致
 - 网页版单次 ZIP 解析（替代原先的 `extractDeviceInfo` + `processZipFile` 二次解析）
-- 三端评分表完全一致：`(100.0001, inf)` / `(90, 100)` / `(80, 90)` / `(70, 80)` / `(0, 70)`
+- 三端评分表完全一致：`(100.0001, inf)` / `(90, 100.0001)` / `(80, 90)` / `(70, 80)` / `(0, 70)`
 
 ### 核心功能
 
@@ -59,6 +59,7 @@ HyperBatteryHealthCalc-bat/
 ├── run_gui.vbs                  # Windows GUI 无窗口启动脚本（VBScript 三级降级）
 ├── report_io.py                  # 统一原子写入与编码策略（CLI/GUI 公用）
 ├── report_io_smoke.py            # 报告写入与源文件保护冒烟脚本
+├── battery_smoke.py              # 真机 bugreport 样本解析冒烟脚本（默认覆盖真实样本）
 ├── js/
 │   ├── zip.js                   # zip.js 库（开发版，完整注释，~300KB+）
 │   └── zip.min.js               # zip.js 库（压缩版，index.html 实际引用）
@@ -1014,6 +1015,7 @@ GUI 界面操作：选择诊断文件（下拉列表或"浏览..."）→ 可选�
 ### 网页版方式
 
 直接用浏览器打开 `index.html`，选择诊断 ZIP 文件即可自动分析。如果自动提取设计容量失败，页面会显示手动输入框和"计算"按钮，手动输入设计容量后点击即可。结果页面包含折叠/展开的"电池详细信息"（翻译对照 + 原始数据）。
+分析成功后会出现“导出报告 (txt)”按钮，支持将当前报告导出为 UTF-8 编码文本文件，适合后续存档或离线比对。
 
 ### 报告写入完整性验收
 
@@ -1029,6 +1031,61 @@ python report_io_smoke.py
 ```
 
 脚本默认输出 `report_io_smoke.json`，执行成功返回码为 `0`；失败返回码为 `1`，便于 CI/本地批处理联动。
+
+### 真机 bugreport 冒烟验收
+
+执行针对真实样本的完整解析冒烟脚本。脚本会默认查找项目内置真实样本（若存在则直接运行）：
+
+- 默认样本：`input/bugreport-2026-06-23-100941.zip`
+- 默认输出：`battery_smoke.json`（脚本目录）
+
+```bash
+python battery_smoke.py
+python battery_smoke.py --zip D:/1/HyperBatteryHealthCalc-main/HyperBatteryHealthCalc-bat/input/bugreport-2026-06-23-100941.zip
+
+# 可选：覆盖最小通过阈值并要求命中到第一个失败即停止
+python battery_smoke.py --zip ... --min-diagnostics 3 --fail-fast --print-summary
+```
+
+参数说明：
+- `--zip`：指定单个或多个 bugreport ZIP，重复使用可支持多样本
+- `--output`：自定义输出 JSON 报告路径（默认 `battery_smoke.json`）
+- `--min-diagnostics`：通过最小 `usage_diagnostics` 阈值（默认 `1`）
+- `--fail-fast`：遇到第一条失败立即停止
+- `--print-summary`：命令行打印 `OK/FAILED` 概要
+- `--json`：命令行直接输出最终 JSON 报告（适配 CI）
+
+脚本成功解析后返回码为 `0`，返回值包含每个样本的:
+- 设计容量/当前容量提取是否成功
+- `health_percentage` 是否有效
+- 中文诊断项是否已收集
+- 全部样本成功数量与失败数量
+- `sample_order`/`sample_count`，便于日志索引样本级结果
+- 输出报告中的字段：
+  - `ok`：总体是否通过
+  - `failed_samples` / `ok_samples`：样本通过率统计
+  - `failure_reasons`：失败原因全集
+  - `exit_code`：最终返回码
+  - `failure_rate`：失败率（百分比）
+  - `checks`：逐样本失败标签，便于 CI 定位
+  - `trace_tail`：异常样本的短栈片段（非成功样本才有）
+
+示例摘要字段（成功时）：
+
+```json
+{
+  "schema_version": "battery-smoke/v1",
+  "ok": true,
+  "total_samples": 1,
+  "ok_samples": 1,
+  "failed_samples": 0,
+  "sample_count": 1,
+  "sample_order": ["D:\\...\\input\\bugreport-2026-06-23-100941.zip"],
+  "failure_rate": 0,
+  "failure_reasons": [],
+  "exit_code": 0
+}
+```
 
 ---
 

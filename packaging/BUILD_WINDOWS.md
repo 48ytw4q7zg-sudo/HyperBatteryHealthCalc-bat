@@ -47,7 +47,9 @@ After checks pass, a unique directory under `dist/` contains the one-folder bund
 `HyperBatteryHealthCalc-Windows-x64.zip`, and `SHA256SUMS.txt`. This is a prepared,
 locally verified artifact pending the parent's independent review. It is unsigned.
 Running on the build host with minimal PATH establishes bundled-runtime operation,
-but does not substitute for a clean Windows 10/11 machine or physical USB test.
+but does not substitute for every Windows 11 build, a clean OS, or physical USB.
+Windows 10 x64 physical testing was not performed and is user-waived (2026-09-08,
+non-blocking); physical USB validation remains explicitly unverified.
 
 Official packaging references:
 - https://pyinstaller.org/en/stable/usage.html

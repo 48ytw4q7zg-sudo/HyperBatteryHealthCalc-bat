@@ -359,6 +359,17 @@
         #calculate-btn {
             display: none;
         }
+
+        #export-report-btn {
+            margin-top: 10px;
+            display: none;
+        }
+
+        #export-report-btn[disabled] {
+            background: linear-gradient(135deg, #a0aec0, #718096);
+            box-shadow: none;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 
@@ -414,6 +425,7 @@
         <p style="color:red;">(拨号界面中输入" * "以开始抓包)</p>
 
         <button id="calculate-btn">计算</button>
+        <button id="export-report-btn" disabled>导出报告 (txt)</button>
 
         <div id="status" class="status"></div>
         <div id="result" class="result"></div>
@@ -436,7 +448,7 @@
         // 评分表 (与 Python battery_core.py 一致 — 统一边界)
         const RATING_TABLE = [
             [100.0001, Infinity, '超出设计容量（可能为冗余设计或第三方电池）', '#e67e22'],
-            [90,       100,      '极佳状态',                               '#27ae60'],
+            [90,       100.0001,'极佳状态',                               '#27ae60'],
             [80,       90,       '良好状态',                               '#f39c12'],
             [70,       80,       '正常衰减',                               '#e67e22'],
             [0,        70,       '建议考虑更换电池',                         '#e74c3c']
@@ -466,13 +478,13 @@
             'currently on battery': '当前使用电池供电',
             'Time on battery': '电池使用总时间',
             'Charge time remaining': '剩余充电时间',
-            'Discharge': '总放电量',
             'Screen off discharge': '息屏放电量',
             'Screen doze discharge': '休眠放电量',
             'Screen on discharge': '亮屏放电量',
-            'Screen brightnesses': '屏幕亮度分布',
             'Device light doze discharge': '设备轻度休眠放电',
             'Device deep doze discharge': '设备深度休眠放电',
+            'Discharge': '总放电量',
+            'Screen brightnesses': '屏幕亮度分布',
             'Statistics since last charge': '自上次充电以来的统计'
         };
 
@@ -524,15 +536,21 @@
         let parsedOk = false;
         let parseRevision = 0;
         let lastParsedResult = null;
+        let lastExportReportText = '';
+        let lastExportReportFile = '';
+        let lastExportReportInputs = null;
 
         document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('calculate-btn').addEventListener('click', manualCalculate);
             document.getElementById('zip-file').addEventListener('change', handleFileSelect);
+            document.getElementById('export-report-btn').addEventListener('click', saveReportAsTxt);
+            document.getElementById('initial-capacity').addEventListener('input', handleCapacityInput);
         });
 
         function handleFileSelect() {
             parseRevision += 1;
             lastParsedResult = null;
+            clearExportReport();
             document.getElementById('initial-capacity').value = '';
             parsedOk = false;
             lastManualCapacity = null;
@@ -542,6 +560,10 @@
             document.getElementById('status').style.display = 'none';
 
             const file = document.getElementById('zip-file').files[0];
+            if (!hasZipRuntime()) {
+                showError(document.getElementById('result'), '当前页面未成功加载解压组件，请检查网络并刷新页面重试');
+                return;
+            }
             if (file) {
                 showStatus('正在自动分析电池数据，请稍候...');
                 parseZipAndRender(file, null);
@@ -558,7 +580,8 @@
         }
 
         async function parseHealthTxtEntry(entry, infoTarget) {
-            const txt = await entry.getData(new zip.TextWriter());
+            assertTextEntryWithinLimit(entry);
+            const txt = await entry.getData(new zip.TextWriter(), { checkSignature: true });
             const designMatch = RE_DESIGN.exec(txt);
             const designCapacity = designMatch ? Number(designMatch[1]) / 1000 : null;
             if (Number.isFinite(designCapacity) && designCapacity > 0 && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
@@ -572,15 +595,25 @@
         }
 
         async function parseBugreportTxtEntry(entry, infoTarget) {
-            const txt = await entry.getData(new zip.TextWriter());
+            assertTextEntryWithinLimit(entry);
+            const txt = await entry.getData(new zip.TextWriter(), { checkSignature: true });
             parseBugreportText(txt, infoTarget);
         }
 
         function manualCalculate() {
+            clearExportReport();
             const file = document.getElementById('zip-file').files[0];
             if (!file) { showError(document.getElementById('result'), '请选择一个诊断文件'); return; }
-            const val = Number(document.getElementById('initial-capacity').value);
-            if (!Number.isFinite(val) || val <= 0) { showError(document.getElementById('result'), '请输入一个有效的初始电池容量'); return; }
+            if (!hasZipRuntime()) {
+                showError(document.getElementById('result'), '当前页面未成功加载解压组件，请检查网络并刷新页面重试');
+                return;
+            }
+            const capacityText = document.getElementById('initial-capacity').value.trim();
+            const val = capacityText ? Number(capacityText) : null;
+            if (capacityText && (!Number.isFinite(val) || val <= 0)) {
+                showError(document.getElementById('result'), '请输入一个有效的初始电池容量');
+                return;
+            }
             showStatus('正在解析电池数据，请稍候...');
             parseZipAndRender(file, val);
         }
@@ -589,7 +622,13 @@
         async function parseZipAndRender(file, manualCapacity) {
             const resultDiv = document.getElementById('result');
             const revision = ++parseRevision;
+            const reportInputs = captureReportInputs();
             const isCurrent = () => revision === parseRevision;
+            clearExportReport();
+            if (!hasZipRuntime()) {
+                showError(resultDiv, '当前页面未成功加载解压组件，请检查网络并刷新页面重试');
+                return;
+            }
             if (!file || !file.name.toLowerCase().endsWith('.zip') || file.size <= 0) {
                 showError(resultDiv, '请选择非空的 .zip 格式诊断包');
                 document.getElementById('status').style.display = 'none';
@@ -661,11 +700,17 @@
                     if (entryName.endsWith('/')) continue;
 
                     if (isZipEntry(entryName)) {
+                    if (typeof entry.uncompressedSize === 'number' && entry.uncompressedSize > 512 * 1024 * 1024) {
+                        parseIssueCount += 1;
+                            console.warn(`跳过过大的内层压缩包: ${entryName}`, entry.uncompressedSize);
+                            continue;
+                        }
                         showStatus('正在解压内层文件...');
                         let innerBlob = null;
                         let innerReader = null;
                         try {
-                            innerBlob = await entry.getData(new zip.BlobWriter('application/zip'));
+                            innerBlob = await entry.getData(new zip.BlobWriter('application/zip'), { checkSignature: true });
+                            if (!isCurrent()) return;
                             innerReader = new zip.ZipReader(new zip.BlobReader(innerBlob));
                             const innerEntries = await innerReader.getEntries();
 
@@ -731,6 +776,7 @@
                         const partialReport = buildPartialReport(info);
                         const suffix = failureMessage ? `<p style=\"color:#d97706; margin-top:8px;\">${failureMessage}</p>` : '';
                         showResult(resultDiv, `${partialReport}${suffix}`, false);
+                        setExportReport(`${partialReport}${suffix}`, file.name, info, reportInputs);
                     } else if (failureMessage) {
                         showError(resultDiv, failureMessage);
                     }
@@ -740,15 +786,19 @@
                 const capacityInfo = getCurrentCapacityInfo(info);
                 const currentCap = capacityInfo.value;
                 if (!currentCap) {
-                    showResult(resultDiv, buildPartialReport(info), false);
+                    const partialReport = buildPartialReport(info);
+                    showResult(resultDiv, partialReport, false);
                     document.getElementById('status').style.display = 'none';
+                    setExportReport(partialReport, file.name, info, reportInputs);
                     return;
                 }
 
                 parsedOk = true;
                 lastManualCapacity = manualCapacity;
                 const warning = parseIssueCount > 0 ? `<p>部分日志解析失败（${parseIssueCount} 处），以下报告仅包含已成功提取的数据。</p>` : '';
-                showResult(resultDiv, buildFullReport(info, designCap, currentCap, capacityInfo) + warning, true);
+                const reportHtml = buildFullReport(info, designCap, currentCap, capacityInfo) + warning;
+                showResult(resultDiv, reportHtml, true);
+                setExportReport(reportHtml, file.name, info, reportInputs);
                 document.getElementById('status').style.display = 'none';
 
             } catch (e) {
@@ -758,10 +808,140 @@
                 document.getElementById('manual-input-container').style.display = 'block';
                 document.getElementById('calculate-btn').style.display = 'block';
                 document.getElementById('status').style.display = 'none';
+                clearExportReport();
             } finally {
                 if (reader) {
                     try { await reader.close(); } catch (closeError) { console.warn('关闭诊断包失败', closeError); }
                 }
+            }
+        }
+
+        function captureReportInputs() {
+            return {
+                file: document.getElementById('zip-file').files[0],
+                capacity: document.getElementById('initial-capacity').value.trim()
+            };
+        }
+
+        function reportInputsMatch(inputs) {
+            const current = captureReportInputs();
+            return !!inputs && inputs.file === current.file && inputs.capacity === current.capacity;
+        }
+
+        function handleCapacityInput() {
+            clearExportReport();
+            if (document.getElementById('result').style.display === 'block') {
+                showStatus('容量已变更，请重新计算后保存报告');
+            }
+        }
+
+        function assertTextEntryWithinLimit(entry) {
+            if (Number.isFinite(entry.uncompressedSize) && entry.uncompressedSize > 256 * 1024 * 1024) {
+                throw new Error('单个文本日志解压后超过 256 MB，已跳过以避免浏览器内存不足');
+            }
+        }
+
+        function clearExportReport() {
+            lastExportReportInputs = null;
+            lastExportReportText = '';
+            lastExportReportFile = '';
+            const exportBtn = document.getElementById('export-report-btn');
+            if (!exportBtn) return;
+            exportBtn.disabled = true;
+            exportBtn.style.display = 'none';
+        }
+
+        function hasZipRuntime() {
+            return !!(typeof zip !== 'undefined' && zip && typeof zip.ZipReader === 'function' && typeof zip.BlobReader === 'function');
+        }
+
+        function normalizeExportFileName(fileName) {
+            const baseName = (fileName || 'battery-report')
+                .replace(/\.zip$/i, '')
+                .replace(/[\u0000-\u001f\u007f\\/:*?"<>|]+/g, '_')
+                .replace(/\s+/g, '_');
+            const safeBase = Array.from(baseName || 'battery-report').slice(0, 100).join('');
+            const suffix = new Date().toISOString().replace(/[^\d]/g, '').slice(0, 14);
+            return `${safeBase}_${suffix}.txt`;
+        }
+
+        function htmlToPlainText(html) {
+            const container = document.createElement('div');
+            container.innerHTML = (html || '')
+                .replace(/<(button|script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/(?:td|th)>/gi, '$&\t')
+                .replace(/<\/(?:p|div|section|article|li|h[1-6]|tr|pre|details|summary)>/gi, '$&\n');
+            return (container.textContent || '')
+                .replace(/\r\n?/g, '\n')
+                .replace(/[ \t]+\n/g, '\n')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+        }
+
+        function setExportReport(html, sourceFile, info, inputs = captureReportInputs()) {
+            if (!reportInputsMatch(inputs)) {
+                clearExportReport();
+                showStatus('输入已变更，请重新分析或计算后保存报告');
+                return;
+            }
+            const exportText = htmlToPlainText(html);
+            if (!exportText) {
+                clearExportReport();
+                return;
+            }
+            const timestamp = new Date().toLocaleString();
+            const source = sourceFile || 'battery-report';
+            const reportContent = [
+                `报告生成时间: ${timestamp}`,
+                `诊断文件: ${source}`,
+                `是否手动输入容量: ${info && info.designCapacitySource === '手动输入' ? '是' : '否'}`,
+                '',
+                exportText,
+                ''
+            ].join('\n');
+            lastExportReportText = reportContent;
+            lastExportReportFile = normalizeExportFileName(source);
+            lastExportReportInputs = inputs;
+            const exportBtn = document.getElementById('export-report-btn');
+            if (!exportBtn) return;
+            exportBtn.disabled = false;
+            exportBtn.style.display = 'block';
+        }
+
+        function saveReportAsTxt() {
+            const exportBtn = document.getElementById('export-report-btn');
+            if (!exportBtn) return;
+            if (!lastExportReportText || !lastExportReportFile || !reportInputsMatch(lastExportReportInputs)) {
+                clearExportReport();
+                showStatus('当前报告已失效，请重新分析或计算后保存'); return;
+            }
+            if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' || typeof URL.revokeObjectURL !== 'function') {
+                showStatus('当前环境不支持文件导出（缺少 URL API），请手动复制报告内容'); return;
+            }
+            if (typeof Blob === 'undefined') {
+                showStatus('当前环境不支持文件导出，请手动复制报告内容'); return;
+            }
+            exportBtn.disabled = true;
+            let downloadUrl = null;
+            let anchor = null;
+            try {
+                const windowsText = lastExportReportText.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n');
+                const blob = new Blob(['\uFEFF', windowsText], { type: 'text/plain;charset=utf-8' });
+                downloadUrl = URL.createObjectURL(blob);
+                anchor = document.createElement('a');
+                anchor.href = downloadUrl;
+                anchor.download = lastExportReportFile;
+                anchor.style.display = 'none';
+                document.body.appendChild(anchor);
+                anchor.click();
+                showStatus(`已请求下载报告：${lastExportReportFile}，请在浏览器下载列表查看`);
+            } catch (error) {
+                showStatus(`导出失败：${error && error.message ? error.message : '请稍后重试'}`);
+            } finally {
+                if (anchor && anchor.parentNode) anchor.parentNode.removeChild(anchor);
+                if (downloadUrl) setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+                exportBtn.disabled = !lastExportReportText || !reportInputsMatch(lastExportReportInputs);
             }
         }
 
@@ -837,11 +1017,11 @@
                 }
             }
             m = RE_LAST.exec(text);
-            if (m) info.lastLearnedCapacity = Math.floor(parseFloat(m[1]));
+            if (m) info.lastLearnedCapacity = Math.round(parseFloat(m[1]));
             m = RE_MIN.exec(text);
-            if (m) info.minLearnedCapacity = Math.floor(parseFloat(m[1]));
+            if (m) info.minLearnedCapacity = Math.round(parseFloat(m[1]));
             m = RE_MAX.exec(text);
-            if (m) info.maxLearnedCapacity = Math.floor(parseFloat(m[1]));
+            if (m) info.maxLearnedCapacity = Math.round(parseFloat(m[1]));
             parseUsageStats(text, info);
             parsePowerUseStats(text, info);
             parseWakelockLeaders(text, info);
@@ -957,8 +1137,8 @@
             out = out.replace(/(\d+\.?\d*\s*mAh)/g, '<span class="capacity-value">$1</span>');
             out = out.replace(/(\d+h\s*\d+m\s*\d+s)/g, '<span class="time-value">$1</span>');
             out = out.replace(/(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})/g, '<span class="time-value">$1</span>');
-            for (const [en, zh] of Object.entries(BATTERY_TRANSLATIONS)) {
-                out = out.replace(new RegExp(en, 'g'), `<span class="battery-key">${en}</span>\n    (${zh})`);
+            for (const [en, zh] of Object.entries(BATTERY_TRANSLATIONS).sort((a, b) => b[0].length - a[0].length)) {
+                out = out.replace(new RegExp(en.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `<span class="battery-key">${en}</span>\n    (${zh})`);
             }
             return out;
         }
@@ -1217,7 +1397,10 @@
             if (!info.uidPackages) info.uidPackages = {};
             const cleanPackage = String(packageName || '').trim().split(':')[0];
             if (!uid || !cleanPackage) return;
-            if (!info.uidPackages[uid]) info.uidPackages[uid] = cleanPackage;
+            const existing = info.uidPackages[uid];
+            if (existing == null || (String(existing).includes(':') && !cleanPackage.includes(':'))) {
+                info.uidPackages[uid] = cleanPackage;
+            }
         }
 
         function parseWakelockLeaders(text, info) {

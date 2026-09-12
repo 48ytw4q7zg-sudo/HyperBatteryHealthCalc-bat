@@ -141,11 +141,10 @@ class BatteryHealthApp:
             bg='#ffffff', fg='#2d3748', relief='flat',
             padx=10, pady=10, state='disabled'
         )
-        self.result_text.pack(fill='both', expand=True)
-
         scrollbar = ttk.Scrollbar(result_frame, orient='vertical',
                                   command=self.result_text.yview)
         scrollbar.pack(side='right', fill='y')
+        self.result_text.pack(fill='both', expand=True)
         self.result_text.configure(yscrollcommand=scrollbar.set)
 
         tk.Label(
