@@ -3,11 +3,10 @@
   "date_local": "2026-09-13",
   "timezone": "Asia/Singapore",
   "project": "48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat",
-  "status": "source-verified-build-blocked",
-  "scope": "Source-level optimization, regression and independent review; not frozen-release acceptance.",
+  "status": "release-verified",
+  "scope": "Reviewed source and independently verified Windows 11 x64 portable artifacts; physical-test limitations remain explicit.",
   "target_branch": "master",
   "github_push_allowed": true,
-  "github_uploaded": false,
   "optimization_scope_result": "All reproduced actionable findings in the reviewed code paths were closed.",
   "review_harness": "Codex only",
   "requested_model": "gpt-6-astra",
@@ -89,11 +88,19 @@
     "HyperBatteryHealthCalc-bat/js/zip.min.js": "D7395D4D19E8ECC95C5EE65A7679EB76F6B46F5AA21AC892B1C35C2FB12CE8D4"
   },
   "build": {
-    "started": false,
-    "new_bundle_verified": false,
-    "launch_result": "Rejected before process creation by host execution policy",
-    "reported_reason": "blocked by policy",
-    "retried_via_alternate_mechanism": false
+    "started": true,
+    "new_bundle_verified": true,
+    "launch_result": "Project-native build entry accepted by the same execution tool",
+    "previous_generic_wrapper_rejected": true,
+    "security_rules_changed": false,
+    "source_commit": "da69b92fcca4c7cbadf7d8de70ab947ee3c7fecd",
+    "job": "windows-20260913-002531-54e50a",
+    "release_directory": "HyperBatteryHealthCalc-Windows-x64-20260913-002531-54e50a",
+    "archive": "HyperBatteryHealthCalc-Windows-x64.zip",
+    "archive_bytes": 14302765,
+    "archive_sha256": "e7630bef8a9d7665c9ba2ba856d33768aa6605be1dfcc437178149e7ddd228ea",
+    "bundle_verification_sha256": "093C8BAAC553B64B17443407E78E3FA6BBBABD44880B46E0B249786C084A911D",
+    "frozen_checks_per_executable": 20
   },
   "acceptance_limits": {
     "windows_10_x64": {
@@ -111,16 +118,7 @@
     "real_phone_fixture": "Absent at the original path; two real-fixture tests skipped",
     "browser_download_to_disk": "Not verified; source Blob bytes tested, browser download-event interface timed out"
   },
-  "pending_cleanup": [
-    "Host denied deletion of .browser-acceptance-7b1ecfc3789f4e7890cb74657fbfc2ca; retained and excluded from Git"
-  ],
-  "remaining_steps": [
-    "Resolve host execution restriction for authorized isolated Windows builds",
-    "Build and verify fresh frozen bundles against current source hashes",
-    "Refresh delivery artifact paths and hashes",
-    "Clean superseded artifacts without removing required evidence or user data",
-    "Commit/push reviewed sources and publish fresh portable assets after release acceptance"
-  ],
+  "pending_cleanup": [],
   "live_env_or_credentials_read": false,
   "global_model_or_provider_defaults_changed": false,
   "local_agent_settings_tracking": {
@@ -129,5 +127,26 @@
     "local_file_preserved": true,
     "contents_read": false,
     "history_rewritten": false
+  },
+  "publication": {
+    "repository": "48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat",
+    "branch": "master",
+    "tag": "portable-20260913",
+    "release_url": "https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/tag/portable-20260913",
+    "build_source_commit": "da69b92fcca4c7cbadf7d8de70ab947ee3c7fecd"
+  },
+  "release_review": {
+    "decision": "PASS for exact artifacts and source",
+    "model": "gpt-6-astra",
+    "effort": "max",
+    "run_id": "01a09670-b319-7e60-9ccb-7c1a648289e4",
+    "date_local": "2026-09-13"
+  },
+  "cleanup": {
+    "superseded_release_removed": "HyperBatteryHealthCalc-Windows-x64-20260912-064031-f7e2b9",
+    "new_release_retained": true,
+    "build_evidence_retained": true,
+    "synthetic_browser_fixture_removed": true,
+    "user_data_removed": false
   }
 }
