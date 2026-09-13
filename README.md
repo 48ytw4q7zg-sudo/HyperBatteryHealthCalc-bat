@@ -24,7 +24,7 @@
 
 健康度核心公式为 `(最小学习容量 / 设计容量) × 100%`，并统一五档评级。三端评分边界一致。
 
-**电脑新手**请看「新手教程」；**会终端、嫌啰嗦**请看「快速教程（大学生版）」。
+**电脑新手**看「新手教程」；**会终端**看「快速教程（大学生版）」。教程按**刚重装的干净 Windows x64** 编写，并写明官方验收边界（Win10 未实机、非签名包等）。
 
 ---
 
@@ -77,351 +77,259 @@ HyperBatteryHealthCalc-main/                 # 本仓库根目录（GitHub maste
 ---
 
 
-## 选你的教程
+## 选你的教程（按干净 Windows 写）
 
 | 你是谁 | 看哪一段 |
 |--------|----------|
-| 电脑新手（约初中水平），要一步一步点鼠标 | 下一节 **新手教程** |
-| 会用终端的大学生 / 嫌上面啰嗦 | 下面 **快速教程（大学生版）** |
-## 快速教程（大学生版）
+| 电脑新手（约初中），要一步一步点鼠标 | **新手教程** |
+| 会用终端、嫌啰嗦 | **快速教程（大学生版）** |
 
-> 假设你会：装软件、用 PowerShell/CMD、解压、改 PATH。要细节或排错再看后面的新手教程。
+> **重要前提（官方验收边界，别跳过）**  
+> - 便携包实测环境：**Windows 11 Pro x64**（build 26200）。  
+> - **仅支持 Windows 10/11 的 64 位（x64）**。32 位 Windows、Windows 7/8.1、**原生 ARM64** 不在支持范围。  
+> - **Windows 10 x64 未做实机测试**（用户已豁免，非阻塞）——不是“官方已通过 Win10”。  
+> - 便携包**未做代码签名**；干净系统弹 SmartScreen 属预期，见下文。  
+> - 便携包**已内置** Python、Tcl/Tk，以及 `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll` 等运行库；**目标机不必再装 Python、Node、VC++ 运行库**。  
+> - 包内运行库 ≠ 在任意干净虚拟机/任意 Win10 构建上都保证成功；失败请先按「干净系统排错表」自查。
 
-### 一条路线就够
+### 干净系统 30 秒自检（两条路线都建议做）
 
-**普通使用：** 下便携包，解压，双击 EXE。
+1. **确认是 64 位**：设置 → 系统 → 系统信息 →「系统类型」应含 **64 位操作系统，x64**。  
+   若显示 ARM64 或 32 位 → **不要继续**，本便携包跑不了。  
+2. **确认可写目录**：准备例如 `D:\Tools` 或桌面文件夹；**不要**放 `C:\Program Files`。  
+3. **网络**：GitHub 可能连不上；连不上就用 Gitee 或请人代下 ZIP。  
+4. **手机诊断 ZIP**：没有它，工具装好也算不出健康度（导出方法见后文）。
+
+---
+
+## 快速教程（大学生版 · 干净系统）
+
+> 假设：已确认 Win10/11 **x64**、会用 PowerShell、会解压。新手细节见后文。
+
+### A. 便携包（推荐，干净机首选）
 
 ```powershell
-# Releases: https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/latest
-# 资产: HyperBatteryHealthCalc-Windows-x64.zip  （校验见 SHA256SUMS.txt）
-Expand-Archive .\HyperBatteryHealthCalc-Windows-x64.zip -DestinationPath D:\HBHC
-D:\HBHC\HyperBatteryHealthCalc\HyperBatteryHealthCalc.exe
+# 1) 确认 64 位
+(Get-CimInstance Win32_ComputerSystem).SystemType   # 应含 x64-based
+
+# 2) 下载 Release 资产 HyperBatteryHealthCalc-Windows-x64.zip
+#    https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/tag/portable-20260913
+#    ZIP SHA256: e7630bef8a9d7665c9ba2ba856d33768aa6605be1dfcc437178149e7ddd228ea
+
+# 3) 解压到可写目录（示例）
+New-Item -ItemType Directory -Force D:\Tools | Out-Null
+Expand-Archive .\HyperBatteryHealthCalc-Windows-x64.zip -DestinationPath D:\Tools -Force
+
+# 4) 目录结构必须是 ...\HyperBatteryHealthCalc\HyperBatteryHealthCalc.exe 且旁边有 _internal
+Get-ChildItem D:\Tools\HyperBatteryHealthCalc | Select-Object Name
+
+# 5) 先跑内置合成自检（不读真实诊断）
+Set-Location D:\Tools\HyperBatteryHealthCalc
+.\HyperBatteryHealthCalc-cli.exe --self-test --self-test-output "D:\Tools\cli-self-test.json"
+# 打开 json 确认 ok 字段；再双击 HyperBatteryHealthCalc.exe
 ```
 
-**网页：** 解压仓库后打开根目录 `index.html`（依赖同级 `js/zip.min.js`）。
+**不要：** 在 ZIP 内直接双击 EXE；只拷 EXE；删掉 `_internal`；拷到 Program Files。
 
-**源码 CLI/GUI：** Python 3.8+，无第三方包。
+**SmartScreen：** 更多信息 → 仍要运行（未签名）。
 
-```powershell
-git clone https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat.git
-cd HyperBatteryHealthCalc-bat\HyperBatteryHealthCalc-bat
-# 诊断 ZIP 放入 .\input\
-python .\battery_calc.py
-python .\battery_calc.py --input D:\diag --capacity 5000 --output report.txt
-python .\battery_gui.py
-# 回归
-cd .. ; python -m unittest test_battery_core test_functional_completion -v
-```
-
-### 诊断包
-
-拨号 `*#*#284#*#*`，或 设置 → 全部参数与信息 → 连点「处理器」。导出 bugreport ZIP。
-
-### 便携 CLI
+**CLI：**
 
 ```powershell
 .\HyperBatteryHealthCalc-cli.exe --help
 .\HyperBatteryHealthCalc-cli.exe --input "D:\diag" --no-pause --output reports\out.txt
 ```
 
-退出码：0 成功 / 1 数据或导出失败 / 2 参数错误。保留完整目录与 `_internal`，勿只拷 EXE。
+退出码：0 成功 / 1 数据或导出失败 / 2 参数错误。
 
-### 环境摘要
+### B. 网页版
 
-| 路径 | 依赖 |
-|------|------|
-| 便携包 | Win10/11 x64，无本机 Python |
-| Web | 现代浏览器 |
-| CLI/GUI 源码 | Python 3.8+ stdlib（GUI 需 tkinter） |
-| 构建便携包 | x64 CPython+Tk、Node（门禁）、`build_windows.ps1` |
+解压**整个仓库 ZIP**后打开根目录 `index.html`（必须保留同级 `js/zip.min.js`）。勿把单个 html 拷到桌面。
 
----
-## 新手教程：一步一步装好并用起来
+### C. 源码 CLI/GUI（干净机需要自备 Python）
 
-> 下面按「电脑新手 / 初中生也能跟着点」写。每一步都写清楚：打开哪个网页、点哪个按钮、文件放哪里、看到什么算成功。  
-> 如果你只想**马上看电池健康度**，走 **路线一** 或 **路线二**，大约 5–10 分钟，**不用装 Python**。
-
-### 先认识几个词（会了就不怕）
-
-| 词 | 白话解释 |
-|----|----------|
-| **浏览器** | 上网的软件，Windows 自带 **Microsoft Edge**（蓝色 e 图标），也可以用 Chrome |
-| **ZIP 压缩包** | 把很多文件打包成一个文件，像书包。需要先「解压」才能用里面的东西 |
-| **解压** | 把书包里的东西拿出来。Windows 自带解压功能 |
-| **双击** | 鼠标左键快速点两下 |
-| **文件夹路径** | 文件住在哪一层，例如 `C:\Users\你\Desktop` 表示桌面 |
-| **GitHub** | 存放本项目源码和安装包的网站。本仓库地址见文首表格 |
-| **Release / 发行版** | 作者打包好的「安装包」，下载 ZIP 即可，一般不用自己编译 |
-| **诊断 ZIP** | 小米手机导出的系统日志压缩包，本工具要分析的就是它 |
-
-### 路线怎么选（只选一条）
-
-| 你的情况 | 走哪条 | 大概要什么 |
-|----------|--------|------------|
-| 只想看自己手机电池健康，会下载解压就行 | **路线一：下载 Windows 便携版** | 一台 Windows 10/11 电脑 |
-| 电脑暂时不便解压，或想先在浏览器里试试 | **路线二：网页版** | 浏览器 |
-| 想自己改代码、批量处理、或学习源码 | **路线三：从 GitHub 跑源码** | 再装 Git + Python |
-
-**普通用户请优先走路线一。** 路线三步骤多，但每一步都写了。
-
----
-
-### 路线一：下载 Windows 便携版（推荐新手）
-
-#### 1.1 打开下载页面
-
-1. 打开 **Microsoft Edge**（或 Chrome）。  
-2. 在顶部地址栏粘贴下面网址，按 **回车**：  
-   `https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/latest`  
-3. 你会看到标题类似 **HyperBatteryHealthCalc Windows x64 portable 2026-09-13** 的页面。  
-4. 往下滚，找到 **Assets（资源）** 一栏，可能要点一下箭头展开。
-
-#### 1.2 下载哪几个文件
-
-1. 点 **`HyperBatteryHealthCalc-Windows-x64.zip`**，浏览器开始下载。  
-2. （可选但建议）再点一下 **`SHA256SUMS.txt`**，这是校验文件，新手可先跳过。  
-3. 下载完成后，点浏览器右上角 **下载图标**，或按 `Ctrl+J` 打开下载列表。  
-4. 记住文件在哪个文件夹（通常是 **下载** 文件夹）。
-
-> 若 GitHub 打不开：可改用 Gitee 仓库页找 Release，或请网络好的人代下 ZIP 后用 U 盘拷给你。
-
-#### 1.3 解压（不要只解压一半）
-
-1. 打开 **文件资源管理器**（任务栏文件夹图标，或按 `Win+E`）。  
-2. 进入 **下载** 文件夹。  
-3. 找到 `HyperBatteryHealthCalc-Windows-x64.zip`。  
-4. **右键单击** 该文件 → 选 **全部解压缩…**（Windows 11）或 **解压到 HyperBatteryHealthCalc-Windows-x64\**（若装了其他解压软件）。  
-5. 解压目标建议改成例如：  
-   `D:\电池工具`  
-   或直接解压到 **桌面** 也可以。  
-6. 点 **解压缩**，等待完成。
-
-**非常重要（新手最容易错）：**
-
-- 要进入解压出来的**文件夹**里运行程序，**不要**在 ZIP 里直接双击 EXE。  
-- 要把**整个文件夹**一起拷走，**不能**只拷 `HyperBatteryHealthCalc.exe` 一个文件。  
-- 文件夹里必须一直带着 **`_internal`**，删了就打不开。  
-- 不要把程序放进 `C:\Program Files` 这种系统目录，会没权限。
-
-#### 1.4 打开程序
-
-1. 打开解压后的文件夹，直到能看到：  
-   `HyperBatteryHealthCalc.exe`  
-   `HyperBatteryHealthCalc-cli.exe`  
-   `_internal` 文件夹  
-   `input` 文件夹（没有的话程序可能会自动建）  
-2. **双击 `HyperBatteryHealthCalc.exe`**。  
-3. 若弹出「Windows 已保护你的电脑」：  
-   - 点 **更多信息**  
-   - 再点 **仍要运行**  
-   - （因本包未做代码签名，属正常现象）  
-4. 成功时会出现图形窗口，标题类似「小米电池容量计算器」。  
-   **看到窗口 = 安装成功。**
-
-#### 1.5 命令行版（可选）
-
-想批量分析时，可在**该文件夹空白处**按住 `Shift` + **右键** → **在此处打开 PowerShell 窗口**，然后输入：
+- **依赖：** 仅 Python 标准库；**不需要** `pip install`。  
+- **版本：** 核心逻辑 **3.8+** 即可；GUI 的 `run_gui.vbs` 在找不到解释器时提示 **请安装 Python 3.12+**——干净机**建议直接装 3.12.x 64 位**，少踩坑。  
+- **必须用 python.org 官方安装器**，不要 Microsoft Store 版 Python（会话应用假 `python.exe`，命令会弹商店）。  
+- 安装第一页勾选 **Add python.exe to PATH**；勾选 **tcl/tk and IDLE**（GUI 需要）。
 
 ```powershell
-.\HyperBatteryHealthCalc-cli.exe --help
-```
+# 验证（必须是 64 位官方解释器，不是 WindowsApps）
+Get-Command python, pythonw | Format-List Name, Source
+py -3.12 -c "import sys,tkinter; print(sys.version); print(sys.maxsize>2**32)"
 
-看到帮助文字即成功。详细参数见后文「使用方法」。
-
----
-
-### 路线二：只用网页版（不用装 Python）
-
-#### 2.1 拿到 index.html
-
-任选一种：
-
-**方法 A（推荐）：直接下载仓库 ZIP**
-
-1. 浏览器打开：  
-   `https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat`  
-2. 点绿色 **Code** 按钮 → **Download ZIP**。  
-3. 解压到例如 `D:\电池网页版`。  
-4. 在解压后的文件夹里找到 **`index.html`**。
-
-**方法 B：已有完整源码仓库**  
-进入仓库根目录，那里也有 `index.html`。
-
-#### 2.2 打开网页并选择诊断文件
-
-1. **双击 `index.html`**，会用默认浏览器打开。  
-2. 页面上找到 **选择文件 / 上传** 的按钮，点击它。  
-3. 在弹出窗口中选中手机导出的 **诊断 ZIP**。  
-4. 等待几秒到十几秒，页面出现绿色结果区 = 成功。  
-5. 若自动识别失败，页面会提示手动输入「设计容量」（例如手机标称 5000 mAh），填入后点 **计算**。
-
-> 注意：网页版依赖同目录下的 `js/zip.min.js`。请解压**整个文件夹**，不要只把 `index.html` 单独拷到桌面。
-
----
-
-### 路线三：从 GitHub 跑源码（想折腾的人）
-
-下面仍按「完全没配过环境」写。
-
-#### 3.1 先装 Git（用来下载代码）
-
-1. 打开：`https://git-scm.com/download/win`  
-2. 下载 **64-bit Git for Windows Setup**。  
-3. 双击安装。安装向导里一路 **Next / Install** 即可；若问「Adjust PATH」，保持默认。  
-4. 装完后：按 `Win+R`，输入 `cmd`，回车，在黑窗口里输入：  
-   `git --version`  
-5. 看到类似 `git version 2.x` = 装好了。
-
-#### 3.2 再装 Python（用来运行程序）
-
-1. 打开：`https://www.python.org/downloads/`  
-2. 点黄色按钮下载最新 **Windows installer (64-bit)**。  
-3. 双击安装。**第一个画面务必勾选底部的：**  
-   **Add python.exe to PATH**  
-   （这一步漏了，后面会提示「不是内部或外部命令」）  
-4. 再点 **Install Now**。  
-5. 安装完，新开一个 `cmd` 窗口，输入：  
-   `python --version`  
-6. 看到 `Python 3.x` = 成功。
-
-**验证图形界面组件（GUI 需要）：**
-
-```text
-python -c "import tkinter; print('tk ok')"
-```
-
-看到 `tk ok` 即可。若报错，请重装 Python 并确保勾选 Tcl/Tk；或先用命令行版/网页版。
-
-> 本电池项目**不需要** `pip install` 任何第三方库，装好 Python 就能跑。
-
-#### 3.3 下载代码（二选一）
-
-**方式 1：命令行克隆**
-
-按 `Win+R` → 输入 `cmd` → 回车，然后：
-
-```bat
-cd /d D:\
 git clone https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat.git
-cd HyperBatteryHealthCalc-bat
-```
-
-国内网络慢可改用 Gitee：
-
-```bat
-git clone https://gitee.com/qinxinwei123/hyper-battery-health-calc-bat.git
-cd hyper-battery-health-calc-bat
-```
-
-**方式 2：下载 ZIP 再解压**（和路线二方法 A 一样）  
-解压后进入文件夹即可，不需要 Git 也能运行。
-
-#### 3.4 放入手机诊断 ZIP
-
-1. 先按后文「手机怎么导出诊断文件」拿到 ZIP。  
-2. 把 ZIP **复制**到：  
-   `...\HyperBatteryHealthCalc-bat\HyperBatteryHealthCalc-bat\input\`  
-   （即子目录 `HyperBatteryHealthCalc-bat` 里的 `input` 文件夹；没有就新建一个叫 `input` 的文件夹）
-
-#### 3.5 运行
-
-**图形界面（推荐先试这个）：**
-
-```bat
 cd HyperBatteryHealthCalc-bat\HyperBatteryHealthCalc-bat
-python battery_gui.py
+# 诊断 ZIP 放 .\input\
+python .\battery_calc.py
+python .\battery_gui.py
 ```
 
-或在资源管理器里双击 `run.bat`。
+回归（仓库根目录）：`python -m unittest test_battery_core test_functional_completion -v`
+
+### 环境表（已按干净系统核对）
+
+| 路径 | 干净系统还需要装什么 |
+|------|----------------------|
+| 便携 GUI/CLI | **无**（无 Python/Node/VC++ 要求；包内已含 VCRUNTIME140*、python314） |
+| 网页 | 仅浏览器；完整解压仓库 |
+| 源码 CLI/GUI | python.org **64 位 Python**（建议 3.12，含 tcl/tk） |
+| Node | 仅开发者跑 `test_web_logic.cjs` |
+| 构建新便携包 | 仓库 `build_windows.ps1` + 门禁环境，见 packaging/BUILD_WINDOWS.md |
+
+---
+
+## 新手教程（初中水平 · 假设电脑刚重装）
+
+下面按**一台刚重装完、什么都没装**的 Windows 电脑写。
+
+### 第 0 步：确认电脑能不能用
+
+1. 点 **开始菜单** → **设置** → **系统** → **系统信息**（或「关于」）。  
+2. 看 **系统类型**：  
+   - 写着 **64 位操作系统，基于 x64 的处理器** → 可以继续。  
+   - 写着 ARM64 或 32 位 → **停止**，这个安装包不支持。  
+3. 准备一个以后能随便改的文件夹，例如在 D 盘新建 `D:\Tools`。  
+   **不要**放进 `C:\Program Files`。
+
+### 第 1 步：下载安装包（不用装 Python）
+
+1. 打开 **Microsoft Edge**（开始菜单里有）。  
+2. 地址栏粘贴：  
+   `https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/latest`  
+3. 回车，打开后往下找 **Assets**（资源），可能要点箭头展开。  
+4. 点 **`HyperBatteryHealthCalc-Windows-x64.zip`** 开始下载。  
+5. 下载完按 `Ctrl+J`，点文件夹图标，进入「下载」目录。
+
+> GitHub 打不开：用 Gitee 仓库找同样的 Release，或让能上网的人下好后用 U 盘拷给你。  
+> 当前发行 `portable-20260913`，ZIP 约 14 MB，SHA256 见发行页（可选校验）。
+
+### 第 2 步：解压（最容易错的一步）
+
+1. `Win+E` 打开文件资源管理器 → **下载**。  
+2. 找到 `HyperBatteryHealthCalc-Windows-x64.zip`。  
+3. **右键** → **全部解压缩…** → 目标改成 `D:\Tools` → 解压缩。  
+4. 打开 `D:\Tools\HyperBatteryHealthCalc`，你应该**同时**看到：  
+   - `HyperBatteryHealthCalc.exe`  
+   - `HyperBatteryHealthCalc-cli.exe`  
+   - `_internal` 文件夹  
+   - `LICENSE.txt`、`README.txt`  
+   - 可能还有 `input`、`reports`  
+
+**检查清单（少一条都容易失败）：**
+
+- [ ] 不是在压缩包里双击  
+- [ ] `_internal` 还在，没有被删  
+- [ ] 整个文件夹一起拷贝，不是只拷 exe  
+- [ ] 不在 Program Files  
+- [ ] 盘符可写（U 盘要先别拔）
+
+### 第 3 步：第一次打开
+
+1. **双击** `HyperBatteryHealthCalc.exe`。  
+2. 若出现蓝色提示「Windows 已保护你的电脑」：  
+   - 点 **更多信息**（小字）  
+   - 点 **仍要运行**  
+   - 原因：本包**未做代码签名**，不是病毒结论。  
+3. 若杀毒软件拦截：添加信任，或换文件夹再解压一次。  
+4. **出现「小米电池容量计算器」窗口 = 成功。** 没有任何窗口 → 见排错表。
+
+### 第 4 步：（可选）自检，不连手机也能测安装
+
+1. 进入 `D:\Tools\HyperBatteryHealthCalc`。  
+2. 在地址栏输入 `powershell` 回车（会在该目录打开 PowerShell）。  
+3. 粘贴：
+
+```powershell
+.\HyperBatteryHealthCalc-cli.exe --self-test --self-test-output "$env:USERPROFILE\Desktop\hbhc-self-test.json"
+```
+
+4. 到桌面用记事本打开 `hbhc-self-test.json`，找 `"ok"`，为 `true` 表示安装正常。
+
+### 第 5 步：手机导出诊断 ZIP（没有这个算不了）
+
+1. （推荐）手机充到 100% 再多充约 30 分钟。  
+2. **方法一：** 拨号盘输入 `*#*#284#*#*`。  
+3. **方法二：** 设置 → 我的设备 / 全部参数与信息 → 连续点 **「处理器」** 约 5–7 次。  
+4. 等 10–30 秒。  
+5. 文件管理里搜 `bugreport` 或 `诊断`，找 **ZIP**（体积较大的那个）。  
+6. 用数据线 / 微信文件助手 / 小米互传拷到电脑，放到例如 `D:\Tools\HyperBatteryHealthCalc\input\`。
+
+### 第 6 步：开始分析
+
+**图形界面：**
+
+1. 双击 `HyperBatteryHealthCalc.exe`。  
+2. 点 **浏览…** 选诊断 ZIP，或把 ZIP 放进 `input` 后点 **刷新文件列表**。  
+3. 点 **开始分析**。  
+4. 看健康度和五档评级；需要保存就点 **保存报告**。
+
+**网页版（不用装 Python）：**
+
+1. 下载仓库 ZIP 并**完整解压**。  
+2. 双击根目录 `index.html`。  
+3. 选择诊断 ZIP。  
+4. 若缺 `js` 文件夹导致空白页 → 说明只解压/只拷了 html，重新完整解压。
 
 **命令行：**
 
-```bat
-cd HyperBatteryHealthCalc-bat\HyperBatteryHealthCalc-bat
-python battery_calc.py
-```
-
-**网页版：** 回到仓库根目录，双击 `index.html`。
-
-#### 3.6 想把代码推到自己的 GitHub（可选）
-
-1. 先注册 GitHub 账号并登录。  
-2. 在本项目页面点右上角 **Fork**。  
-3. 在 cmd 中：
-
-```bat
-git remote add mine https://github.com/你的用户名/HyperBatteryHealthCalc-bat.git
-git push -u mine master
-```
-
-#### 3.7 网页挂到 GitHub Pages（可选）
-
-1. 打开你自己 Fork 的仓库 → **Settings** → 左侧 **Pages**。  
-2. Source 选 **Deploy from a branch**，Branch 选 **master**，文件夹选 **/(root)**，保存。  
-3. 等 1–2 分钟，刷新页面顶部会出现网址，类似：  
-   `https://你的用户名.github.io/HyperBatteryHealthCalc-bat/`  
-4. 用手机/电脑打开该网址，应能看到计算器页面。
-
-#### 3.8 给维护者：重新打包 Windows 便携版（可选）
-
 ```powershell
-# 在仓库根目录，PowerShell 5.1+，需要已装好 x64 Python（含 Tk）和 Node
-& .\build_windows.ps1 -Python 'C:\Python314\python.exe' -Node 'C:\Program Files\nodejs\node.exe'
+cd D:\Tools\HyperBatteryHealthCalc
+.\HyperBatteryHealthCalc-cli.exe --no-pause
 ```
 
-产物在 `dist\HyperBatteryHealthCalc-Windows-x64-<时间戳>\`。详见 [packaging/BUILD_WINDOWS.md](packaging/BUILD_WINDOWS.md)。
+### 第 7 步：想用源码？干净机必须先装 Python（小白最容易死在这）
 
----
+**一定要从官网装，不要点开始菜单里那个会弹商店的「Python」。**
 
-### 手机上怎么导出诊断文件（电池工具必需）
+1. 打开 `https://www.python.org/downloads/`  
+2. 下载 **Windows installer (64-bit)**（当前建议 3.12.x）。  
+3. 双击安装器 → **第一步务必勾选最下面的 Add python.exe to PATH**。  
+4. 点 **Install Now**（不要选 Store 版快捷方式）。  
+5. **重新打开**一个 cmd（旧窗口 PATH 不会更新）：
 
-没有诊断 ZIP，任何路线都算不出健康度。
+```bat
+python --version
+python -c "import sys; print(sys.maxsize>2**32)"
+```
 
-1. **先充电（更准）：** 把手机充到 100%，再多充约 30 分钟（可选，但推荐）。  
-2. **方法 A（拨号）：** 打开拨号盘，输入：  
-   `*#*#284#*#*`  
-   有的机型会自动开始抓取日志。  
-3. **方法 B（设置）：**  
-   设置 → **我的设备 / 全部参数与信息** → 连续点击 **「处理器」** 约 5–7 次。  
-4. 等待约 10–30 秒，系统提示生成诊断/日志文件。  
-5. 打开手机 **文件管理**，搜索关键词：`bugreport` 或 `诊断` 或 `284`，找到体积较大的 **ZIP** 文件。  
-6. 用 QQ/微信文件传输助手、数据线、或小米互传，把 ZIP **传到电脑**。  
-7. 放到你能找到的地方，例如桌面或 `D:\电池工具\input\`。
+- 第二行应打印 `True`（64 位）。  
+- 若 `python` 打开的是 Microsoft Store → 设置里关掉「应用执行别名」里的 python.exe，或改用 `py -3.12`。  
+6. 验证 GUI 组件：
 
-> 不同 HyperOS/MIUI 版本菜单位置略有差别。若连续点「处理器」没反应，尝试「内核版本」「MIUI 版本」等参数项，或用拨号方法。
+```bat
+python -c "import tkinter; print('tk ok')"
+```
 
----
+7. 下载源码（ZIP 解压或 Git 克隆），进入 `HyperBatteryHealthCalc-bat\HyperBatteryHealthCalc-bat`：
 
-### 装好以后怎么用（通用）
+```bat
+python battery_calc.py
+python battery_gui.py
+```
 
-1. 打开 **便携版 GUI**，或 **网页版**，或 `python battery_gui.py`。  
-2. 点 **浏览…** 选择电脑上的诊断 ZIP；便携版也可把 ZIP 放进程序旁 `input` 后点 **刷新文件列表**。  
-3. 点 **开始分析**。  
-4. 等待结果，看 **健康度百分比** 和五档评级：  
-   - \>100%：超出设计容量（可能是冗余设计/第三方电池）  
-   - 90–100%：极佳  
-   - 80–90%：良好  
-   - 70–80%：正常衰减  
-   - <70%：建议考虑更换电池  
-5. 若自动识别不到设计容量：按手机官方参数页面/说明书填 **设计容量 mAh**，再点计算。  
-6. 需要保存时：便携版点 **保存报告**；CLI 用 `--output "reports\报告.txt"`。
+或双击 `run.bat`。  
+电池项目**不需要**安装第三方包。
 
----
+### 出错了怎么办（干净系统排错表）
 
-### 出错了怎么办（新手 FAQ）
+| 现象 | 最可能原因 | 怎么修 |
+|------|------------|--------|
+| 系统类型是 ARM64 | 不支持 | 换 x64 电脑；或自行找社区非官方构建（无保证） |
+| 双击 exe 完全没窗口 | 只拷了 exe / `_internal` 缺失 | 重新完整解压 |
+| 闪退 / 应用程序错误 | 解压损坏、盘符异常 | 重新下载 ZIP 再解压；换 `D:\Tools` |
+| SmartScreen 拦截 | 未签名 | 更多信息 → 仍要运行 |
+| 杀软拦截 | 误报或目录无权限 | 信任该目录；换用户可写目录 |
+| 放进 Program Files 后异常 | 无写权限（报告/input） | 挪到 `D:\Tools` |
+| `python` 弹出 Microsoft Store | 装了应用执行别名/Store 孪生版 | 改用官网 64 位安装器；关 alias；或 `py -3.12` |
+| `python` 不是内部命令 | 没勾 Add to PATH | 重装官网 Python 并勾选；或用完整路径 |
+| `tkinter` 缺失 | 装 Python 时去掉了 Tcl/Tk | 重装官方安装器并保留默认组件 |
+| 网页空白/报错 zip 未定义 | 只打开单个 html，缺 `js/zip.min.js` | 完整解压仓库再打开 |
+| 有窗口但读不出健康度 | 诊断包不对/损坏/太旧 | 重新用手机导出 bugreport ZIP |
+| GitHub 下不动 | 网络 | Gitee 或代下 |
+| Win10 上行为异常 | **未实机验证的边界** | 可尝试；不能当作官方支持声明 |
 
-| 现象 | 可能原因 | 你可以这样做 |
-|------|----------|--------------|
-| 双击 EXE 没反应 / 闪退 | 只拷了 EXE，缺 `_internal`；或解压不完整 | 解压**完整文件夹**再运行 |
-| 提示「Windows 已保护你的电脑」 | 未代码签名 | 更多信息 → 仍要运行 |
-| 选择 ZIP 后没有任何结果 | 文件损坏、不是诊断包、或格式很旧 | 重新用手机导出；确认是 ZIP |
-| `python` 不是内部或外部命令 | 装 Python 时没勾 Add to PATH | 重装 Python 并勾选；或用绝对路径 |
-| `tkinter` 报错 | Python 没装 Tcl/Tk | 重装官方安装器；或用 CLI/网页版 |
-| 打开网页一片空白 | 只拷了 index.html，缺 `js/zip.min.js` | 解压整个仓库文件夹 |
-| 健康度和体感差很多 | 学习容量/充放状态差异 | 多测几次取平均；充满电后再导出 |
-| GitHub 打不开或很慢 | 网络问题 | 用 Gitee 镜像，或让别人代下 ZIP |
-
-更完整的验证边界见 [docs/functional-completion.md](docs/functional-completion.md) 与 [docs/portable-delivery-20260912.md](docs/portable-delivery-20260912.md)。
+更完整边界见 [docs/portable-delivery-20260912.md](docs/portable-delivery-20260912.md)、[docs/functional-completion.md](docs/functional-completion.md)、[packaging/PORTABLE_README.txt](packaging/PORTABLE_README.txt)。
 
 ---
 ## 功能特点
