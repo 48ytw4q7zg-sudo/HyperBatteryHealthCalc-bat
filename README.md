@@ -1,49 +1,223 @@
 # 小米电池健康容量计算器
 
-一款用于解析 Android 诊断 ZIP 文件中的电池数据，计算小米/HyperOS/MIUI 设备当前电池容量百分比的工具。
+解析小米 / HyperOS / MIUI 设备的 Android 诊断 ZIP，计算当前电池容量百分比，并输出中文耗电诊断。数据全部在本地处理，不上传服务器。
 
-本项目链接 >>>
-- [Github Page](https://hikimucheno.github.io/HyperBatteryHealthCalc/)
-- 第三方 >>> 微信搜索 "电池健康报告" (可检测小米、vivo、荣耀、红魔、三星)
+| 项目 | 地址 |
+|------|------|
+| GitHub 源码仓库 | [48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat](https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat) |
+| Gitee 源码仓库 | [qinxinwei123/hyper-battery-health-calc-bat](https://gitee.com/qinxinwei123/hyper-battery-health-calc-bat) |
+| 最新 Windows x64 便携包 | [Release portable-20260913](https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/tag/portable-20260913) |
+| 上游网页版 | [Hikimucheno/HyperBatteryHealthCalc](https://hikimucheno.github.io/HyperBatteryHealthCalc/) |
+| 相关第三方 | 微信搜索「电池健康报告」（可检测小米、vivo、荣耀、红魔、三星） |
+
+**当前交付状态**：源码 `master` 分支 + Windows 11 x64 便携发行 `portable-20260913`（`release-verified`）。构建源码提交 `da69b92`；ZIP SHA256 `e7630bef8a9d7665c9ba2ba856d33768aa6605be1dfcc437178149e7ddd228ea`。验收边界见 [docs/portable-delivery-20260912.md](docs/portable-delivery-20260912.md)。
+
+---
+
+## 系统介绍（最新版）
+
+本项目是一套**三端共享同一套语义**的小米电池诊断分析工具：
+
+- **网页版**：打开 `index.html` 即用，浏览器内解析嵌套诊断 ZIP，无需安装。
+- **Python 桌面端（CLI / GUI）**：共享 `battery_core.py`，支持批量分析、报告导出、中文耗电诊断。
+- **Windows x64 便携包**：双击 EXE 即用，自带 Python / Tcl-Tk 运行库，目标机器无需安装 Python 或 Node。
+
+健康度核心公式为 `(最小学习容量 / 设计容量) × 100%`，并统一五档评级。三端评分边界一致。
 
 ---
 
 ## 项目结构
 
 ```
-HyperBatteryHealthCalc-main/
-├── index.html                              # 网页版（纯浏览器端运行）
-├── js/
-│   └── zip.min.js                          # zip.js 压缩版（index.html 实际引用）
-├── HyperBatteryHealthCalc-bat/             # Python 桌面版子项目
-│   ├── battery_core.py                     # ★ 共享核心模块（数据模型/提取器/评分）
-│   ├── battery_calc.py                     # 命令行版（CLI）
-│   ├── battery_gui.py                      # 图形界面版（GUI, tkinter）
-│   ├── index.html                          # 网页版副本（Q-CR 优化版）
-│   ├── run.bat                             # Windows 启动脚本（→ run_gui.vbs）
-│   ├── run_gui.vbs                         # VBS 无窗口启动（三级降级）
-│   ├── input/                              # 默认输入目录（放置诊断 ZIP）
-│   ├── js/                                 # zip.js 副本
-│   ├── .gitignore                          # Python 生态标准 gitignore
-│   ├── LICENSE                             # GPLv3 许可证
-│   ├── .github/FUNDING.yml                 # GitHub 赞助配置
-│   ├── .gitee/                             # Gitee Issue/PR 模板
-│   └── README.md                           # 子项目详细文档
-├── .github/FUNDING.yml                     # GitHub 赞助配置
-├── LICENSE                                 # Apache 2.0 许可证
-└── README.md                               # 本文件
+HyperBatteryHealthCalc-main/                 # 本仓库根目录（GitHub master）
+├── index.html                               # 根网页版（纯浏览器端）
+├── js/zip.min.js                            # zip.js 压缩版（index.html 引用）
+├── HyperBatteryHealthCalc-bat/              # Python 桌面子项目
+│   ├── battery_core.py                      # ★ 共享核心（数据模型 / 提取器 / 评分）
+│   ├── battery_calc.py                      # 命令行 CLI
+│   ├── battery_gui.py                       # 图形界面 GUI (tkinter)
+│   ├── report_io.py                         # 报告原子写入
+│   ├── portable_entry.py                    # 便携冻结入口
+│   ├── index.html                           # 网页版副本
+│   ├── run.bat / run_gui.vbs                # Windows 启动脚本
+│   ├── input/ reports/                      # 默认输入 / 报告目录
+│   └── README.md                            # 子项目详细文档
+├── packaging/                               # Windows 便携打包与门禁
+│   ├── BUILD_WINDOWS.md                     # 构建说明
+│   ├── PORTABLE_README.txt                  # 便携包使用说明
+│   ├── windows.spec                         # PyInstaller 规格
+│   ├── verify_portable.py                   # 便携验收
+│   └── test_portable.py / test_gui_export.py
+├── docs/                                    # 验收 / 功能完整性 / 发行记录
+│   ├── functional-completion.md
+│   └── portable-delivery-20260912.md        # 最新便携交付记录
+├── build_windows.ps1                        # 一键 Windows 便携构建脚本
+├── test_battery_core.py                     # 核心回归
+├── test_functional_completion.py            # 功能完整性回归
+├── test_web_logic.cjs                       # 网页逻辑回归（需 Node）
+├── AGENTS.md                                # 代理协作约定
+├── LICENSE                                  # Apache 2.0（根项目）
+└── README.md                                # 本文件
 ```
 
 ---
 
 ## 运行形态总览
 
-| 形态 | 入口文件 | 技术栈 | 适用场景 |
-|------|---------|--------|---------|
-| **网页版** | `index.html` | 纯静态 HTML + CSS + JS (zip.js) | 浏览器直接使用，无需安装 |
+| 形态 | 入口 | 技术栈 | 适用场景 |
+|------|------|--------|---------|
+| **Windows 便携版** | Release 中 `HyperBatteryHealthCalc.exe` | 冻结 Python + Tcl/Tk | 普通用户，双击即用 |
+| **网页版** | `index.html` | 纯静态 HTML + CSS + JS (zip.js) | 浏览器直接使用 |
 | **命令行 (CLI)** | `HyperBatteryHealthCalc-bat/battery_calc.py` | Python 3.8+，仅标准库 | 批量处理、脚本自动化 |
-| **图形界面 (GUI)** | `HyperBatteryHealthCalc-bat/battery_gui.py` | Python 3.8+ + tkinter/ttk | 桌面用户，可视化操作 |
-| **共享核心** | `HyperBatteryHealthCalc-bat/battery_core.py` | Python 3.8+ | 被 CLI 和 GUI 共同引用 |
+| **图形界面 (GUI)** | `HyperBatteryHealthCalc-bat/battery_gui.py` | Python 3.8+ + tkinter/ttk | 源码运行，可视化操作 |
+| **共享核心** | `HyperBatteryHealthCalc-bat/battery_core.py` | Python 3.8+ | 被 CLI / GUI 共同引用 |
+
+---
+
+## 快速开始（三选一）
+
+### 方式 A：下载 Windows 便携包（推荐普通用户）
+
+1. 打开 [Releases](https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/latest)。
+2. 下载 `HyperBatteryHealthCalc-Windows-x64.zip` 与 `SHA256SUMS.txt`。
+3. 校验 SHA256，应与发行说明一致。
+4. 解压到**可写目录**（不要直接在 ZIP 内运行，不要只复制 EXE）。
+5. 双击 `HyperBatteryHealthCalc.exe`；命令行入口为 `HyperBatteryHealthCalc-cli.exe`。
+6. 目标系统为 Windows 10/11 x64；无需安装 Python。完整说明见 `packaging/PORTABLE_README.txt`。
+
+### 方式 B：克隆源码后运行（推荐开发者）
+
+见下方「从 GitHub 部署到本机并成功运行」。
+
+### 方式 C：仅使用网页版
+
+克隆仓库后用浏览器打开根目录 `index.html`，或把仓库发布到 GitHub Pages 后在线访问。
+
+---
+
+## 从 GitHub 部署到本机并成功运行
+
+下面按「从零到能跑」写完整步骤。默认目标平台为 **Windows 10/11 x64**。
+
+### 第 0 步：准备账号与工具
+
+| 用途 | 必需？ | 说明 |
+|------|:------:|------|
+| GitHub 账号 | 部署/推送时需要 | 仅本地运行可跳过 |
+| Git for Windows | 源码方式需要 | 安装后 `git --version` 可输出版本号 |
+| Python 3.8+（64 位） | 源码 CLI/GUI 需要 | 安装时勾选 *Add python.exe to PATH*；验证 `python --version` |
+| Node.js 18+ | 仅跑网页逻辑测试需要 | `node --version`；不跑测试可跳过 |
+| 现代浏览器 | 网页版需要 | Chrome / Edge / Firefox |
+
+便携包用户**不需要** Python 与 Node。
+
+### 第 1 步：获取代码
+
+```powershell
+# 方式 1：直接克隆
+git clone https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat.git
+cd HyperBatteryHealthCalc-bat
+
+# 方式 2：先 Fork 再克隆你自己的仓库
+# git clone https://github.com/<你的用户名>/HyperBatteryHealthCalc-bat.git
+# cd HyperBatteryHealthCalc-bat
+```
+
+国内网络可改用 Gitee：
+
+```powershell
+git clone https://gitee.com/qinxinwei123/hyper-battery-health-calc-bat.git
+cd hyper-battery-health-calc-bat
+```
+
+### 第 2 步：环境检查（源码运行）
+
+```powershell
+python --version          # 建议 3.8 及以上，64 位
+git --version
+# 可选：验证 tkinter（GUI 需要）
+python -c "import tkinter; print(tkinter.TkVersion)"
+```
+
+若 `tkinter` 缺失：重新运行官方安装器并安装 Tcl/Tk 组件，或改用 CLI / 网页版。
+
+本项目**不依赖任何第三方 Python 包**，源码克隆后无需 `pip install`。
+
+### 第 3 步：准备诊断文件
+
+1. 小米/HyperOS 手机：**设置 → 全部参数与信息 → 连续点击「处理器」**（约 5–7 次）生成诊断包。
+2. 或拨号盘输入 `*#*#284#*#*` 一键抓取。
+3. 将导出的诊断 ZIP 放到 `HyperBatteryHealthCalc-bat/input/`，或记下文件完整路径。
+
+> 建议先把电量充到 100% 再多充约 30 分钟后导出，数据更完整。
+
+### 第 4 步：本地成功运行
+
+**网页版**
+
+```powershell
+# 资源管理器双击打开，或：
+start .\index.html
+# 在页面选择诊断 ZIP；自动提取失败时可手动填设计容量后点击计算
+```
+
+**命令行 CLI**
+
+```powershell
+cd HyperBatteryHealthCalc-bat
+python battery_calc.py
+python battery_calc.py --input "C:\path\to\zip-folder"
+python battery_calc.py --capacity 5000 --output report.txt
+python battery_calc.py --no-color
+```
+
+退出码：`0` 全部成功；`1` 存在失败/缺数据；`2` 参数错误。
+
+**图形界面 GUI**
+
+```powershell
+cd HyperBatteryHealthCalc-bat
+python battery_gui.py
+# Windows 也可双击 run.bat（经 run_gui.vbs 无窗口启动）
+```
+
+### 第 5 步：跑回归测试（可选，验证环境完整）
+
+```powershell
+# 核心 + 功能完整性（合成数据，不依赖真实诊断包）
+python -m unittest test_battery_core test_functional_completion -v
+
+# 便携行为 + GUI 导出
+python -m unittest packaging.test_portable packaging.test_gui_export -v
+
+# 网页逻辑（需 Node）
+node test_web_logic.cjs
+```
+
+### 第 6 步：推送到你自己的 GitHub 仓库（可选）
+
+```powershell
+git remote add mine https://github.com/<你的用户名>/HyperBatteryHealthCalc-bat.git
+git push -u mine master
+```
+
+若要把**网页版**部署到 GitHub Pages：
+
+1. 仓库 Settings → Pages → Source 选 `Deploy from a branch`。
+2. Branch 选 `master` / `root`，保存。
+3. 等待 Pages 构建完成后访问 `https://<你的用户名>.github.io/HyperBatteryHealthCalc-bat/`。
+4. 确认页面能加载 `js/zip.min.js`（相对路径，无需额外配置）。
+
+### 第 7 步：构建 Windows 便携包（可选，维护者）
+
+仅需要重新打包时执行；目标机不需要构建环境。详见 [packaging/BUILD_WINDOWS.md](packaging/BUILD_WINDOWS.md)。
+
+```powershell
+# 在仓库根目录、PowerShell 5.1+ 下运行
+& .\build_windows.ps1 -Python 'C:\Python314\python.exe' -Node 'C:\Program Files\nodejs\node.exe'
+```
+
+产物在 `dist/HyperBatteryHealthCalc-Windows-x64-<时间戳>/`：完整文件夹、ZIP、`SHA256SUMS.txt`。构建门禁失败会保留证据并停止，不会覆盖已有发行。
 
 ---
 
@@ -74,23 +248,23 @@ HyperBatteryHealthCalc-main/
 
 ## 使用方法
 
-当前功能收口说明与验证边界见 [功能完整性记录](docs/functional-completion.md)。网页和桌面版的手动容量会覆盖自动值；命令行 `--capacity` 保持“缺少设计容量时使用默认值”的含义。部分数据可以保留为报告，但不会据此伪造健康度。
+当前功能收口说明与验证边界见 [功能完整性记录](docs/functional-completion.md)。网页和桌面版的手动容量会覆盖自动值；命令行 `--capacity` 保持「缺少设计容量时使用默认值」的含义。部分数据可以保留为报告，但不会据此伪造健康度。
 
 ### 获取诊断文件
 
-1. 在小米/HyperOS 设备上进入 **设置 → 全部参数与信息 → 连续点击"处理器"** (约 5-7 次)
+1. 在小米/HyperOS 设备上进入 **设置 → 全部参数与信息 → 连续点击「处理器」**（约 5–7 次）
 2. 或在拨号界面输入 `*#*#284#*#*` 一键抓包
-3. 等待系统生成诊断文件 (约 10-30 秒)，通过文件管理器导出 ZIP
+3. 等待系统生成诊断文件（约 10–30 秒），通过文件管理器导出 ZIP
 
-> 据说先把电量充到 100% 再继续充 30 分钟，诊断数据更准确。
+> 建议先把电量充到 100% 再继续充 30 分钟，诊断数据更准确。
 
 ### 网页版
 
-直接用浏览器打开 `index.html`，选择诊断 ZIP 文件即可自动分析。如果自动提取设计容量失败，页面会显示手动输入框和"计算"按钮。
+直接用浏览器打开 `index.html`，选择诊断 ZIP 文件即可自动分析。如果自动提取设计容量失败，页面会显示手动输入框和「计算」按钮。
 
 ### 命令行版 (CLI)
 
-```bash
+```powershell
 cd HyperBatteryHealthCalc-bat
 
 # 分析 input/ 目录下所有 ZIP 文件
@@ -111,7 +285,7 @@ python battery_calc.py --no-color
 
 ### 图形界面版 (GUI)
 
-```bash
+```powershell
 cd HyperBatteryHealthCalc-bat
 
 # 直接运行 Python 脚本
@@ -119,6 +293,18 @@ python battery_gui.py
 
 # 或双击 run.bat（自动调用 VBS 无窗口启动）
 ```
+
+### Windows 便携版 CLI
+
+```powershell
+.\HyperBatteryHealthCalc-cli.exe --help
+.\HyperBatteryHealthCalc-cli.exe --no-color --no-pause
+.\HyperBatteryHealthCalc-cli.exe --input "D:\我的诊断" --no-pause
+.\HyperBatteryHealthCalc-cli.exe --capacity 5000 --recursive --no-pause
+.\HyperBatteryHealthCalc-cli.exe --output "reports\本次报告.txt" --no-pause
+```
+
+相对输入/输出路径相对于 EXE 所在目录。退出码：`0` 成功；`1` 缺数据/坏 ZIP/无输入/导出失败；`2` 参数错误。
 
 ---
 
@@ -515,9 +701,11 @@ exit /b 0
 
 | 组件 | 要求 |
 |------|------|
+| **Windows 便携包** | Windows 10/11 x64；无需本机 Python/Node；需可写目录 |
 | **网页版** | 现代浏览器 (Chrome/Firefox/Edge/Safari)，支持 ES6 + Blob API |
-| **CLI 版** | Python 3.8+，仅标准库 |
-| **GUI 版** | Python 3.8+ + tkinter (Windows/macOS 安装器自带) |
+| **CLI 版（源码）** | Python 3.8+，仅标准库 |
+| **GUI 版（源码）** | Python 3.8+ + tkinter（Windows 安装器通常自带） |
+| **构建便携包** | Windows x64 CPython（含 Tk）+ Node（仅源码门禁测试）+ PowerShell 5.1+ |
 
 ---
 
@@ -554,8 +742,9 @@ exit /b 0
 |------|--------|------|
 | [zip.js](https://github.com/gildas-lormeau/zip.js) | BSD 3-Clause | 网页版浏览器端 ZIP 解析 |
 | Python 标准库 | PSF License | CLI/GUI 版全部运行时依赖 |
+| PyInstaller（仅构建） | GPL/exception | Windows 便携包打包，见 `packaging/requirements-build.txt` |
 
-项目不依赖任何第三方 Python 包。克隆仓库后直接运行即可。
+源码运行不依赖任何第三方 Python 包。克隆仓库后直接运行即可。
 
 ---
 
@@ -570,7 +759,15 @@ Copyright © HikiMu慕鱼酱
 
 ## 贡献
 
-欢迎参与项目改进！如有 bug 反馈或功能建议，可提交 issue 或 pull request。
+欢迎参与项目改进。可在 GitHub 仓库提交 Issue / Pull Request：
+
+1. Fork 本仓库
+2. 创建分支：`git checkout -b fix/short-desc`
+3. 提交改动（保持 CLI/GUI/报告契约稳定；勿提交真实诊断 ZIP 或个人日志）
+4. 推送分支并在 GitHub 打开 PR
+5. 在 PR 中说明改动、验证命令与结果
+
+本地变更请勿直接强推他人的 `master`。
 
 ## 免责声明
 
