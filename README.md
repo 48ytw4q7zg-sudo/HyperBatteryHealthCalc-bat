@@ -24,7 +24,7 @@
 
 健康度核心公式为 `(最小学习容量 / 设计容量) × 100%`，并统一五档评级。三端评分边界一致。
 
-**电脑新手请直接往下看「新手教程：一步一步装好并用起来」**（按初中生电脑水平写，含下载、解压、双击运行、手机导出诊断包、排错表）。
+**电脑新手**请看「新手教程」；**会终端、嫌啰嗦**请看「快速教程（大学生版）」。
 
 ---
 
@@ -76,6 +76,66 @@ HyperBatteryHealthCalc-main/                 # 本仓库根目录（GitHub maste
 
 ---
 
+
+## 选你的教程
+
+| 你是谁 | 看哪一段 |
+|--------|----------|
+| 电脑新手（约初中水平），要一步一步点鼠标 | 下一节 **新手教程** |
+| 会用终端的大学生 / 嫌上面啰嗦 | 下面 **快速教程（大学生版）** |
+## 快速教程（大学生版）
+
+> 假设你会：装软件、用 PowerShell/CMD、解压、改 PATH。要细节或排错再看后面的新手教程。
+
+### 一条路线就够
+
+**普通使用：** 下便携包，解压，双击 EXE。
+
+```powershell
+# Releases: https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/latest
+# 资产: HyperBatteryHealthCalc-Windows-x64.zip  （校验见 SHA256SUMS.txt）
+Expand-Archive .\HyperBatteryHealthCalc-Windows-x64.zip -DestinationPath D:\HBHC
+D:\HBHC\HyperBatteryHealthCalc\HyperBatteryHealthCalc.exe
+```
+
+**网页：** 解压仓库后打开根目录 `index.html`（依赖同级 `js/zip.min.js`）。
+
+**源码 CLI/GUI：** Python 3.8+，无第三方包。
+
+```powershell
+git clone https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat.git
+cd HyperBatteryHealthCalc-bat\HyperBatteryHealthCalc-bat
+# 诊断 ZIP 放入 .\input\
+python .\battery_calc.py
+python .\battery_calc.py --input D:\diag --capacity 5000 --output report.txt
+python .\battery_gui.py
+# 回归
+cd .. ; python -m unittest test_battery_core test_functional_completion -v
+```
+
+### 诊断包
+
+拨号 `*#*#284#*#*`，或 设置 → 全部参数与信息 → 连点「处理器」。导出 bugreport ZIP。
+
+### 便携 CLI
+
+```powershell
+.\HyperBatteryHealthCalc-cli.exe --help
+.\HyperBatteryHealthCalc-cli.exe --input "D:\diag" --no-pause --output reports\out.txt
+```
+
+退出码：0 成功 / 1 数据或导出失败 / 2 参数错误。保留完整目录与 `_internal`，勿只拷 EXE。
+
+### 环境摘要
+
+| 路径 | 依赖 |
+|------|------|
+| 便携包 | Win10/11 x64，无本机 Python |
+| Web | 现代浏览器 |
+| CLI/GUI 源码 | Python 3.8+ stdlib（GUI 需 tkinter） |
+| 构建便携包 | x64 CPython+Tk、Node（门禁）、`build_windows.ps1` |
+
+---
 ## 新手教程：一步一步装好并用起来
 
 > 下面按「电脑新手 / 初中生也能跟着点」写。每一步都写清楚：打开哪个网页、点哪个按钮、文件放哪里、看到什么算成功。  
