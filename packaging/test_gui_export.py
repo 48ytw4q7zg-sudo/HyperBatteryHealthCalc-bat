@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -11,7 +12,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'HyperBatteryHealthCalc-bat'))
 import battery_gui
-from battery_core import BatteryInfo
+from battery_core import DESIGN_SOURCE_ESTIMATED, BatteryInfo, UidPower
 import report_io
 
 
@@ -194,6 +195,63 @@ class ReportExportTests(unittest.TestCase):
         self.run_analysis(app)
         self.assertFalse(app._export_is_current())
         self.assertEqual(app._report_text, '')
+
+    def test_redacted_export_hides_package_and_file_name(self):
+        app = self.make_app()
+        app.redact_export = Mock()
+        info = BatteryInfo(design_capacity=5000, min_learned_capacity=4500, total_discharge_mah=500,
+                           top_uid_power=[UidPower('u0a1', 200)],
+                           uid_packages={'u0a1': 'com.example.private'})
+        app.extractor.extract.return_value = info
+        self.run_analysis(app)
+        app.redact_export.get.return_value = False
+        self.assertIn('com.example.private', app._export_content('.txt'))
+        self.assertIn('synthetic.zip', app._export_content('.json'))
+        app.redact_export.get.return_value = True
+        for suffix in ('.txt', '.json'):
+            exported = app._export_content(suffix)
+            self.assertNotIn('com.example.private', exported)
+            self.assertNotIn('synthetic.zip', exported)
+            self.assertIn('文件1', exported)
+
+    def test_batch_summary_applies_manual_capacity_and_hides_file_names(self):
+        first, second = self.directory / 'first.zip', self.directory / 'second.zip'
+        for path in (first, second):
+            path.write_bytes(b'synthetic')
+        app = self.make_app()
+        app.capacity_entry.get.return_value = '5000'
+        app._collect_zip_files = lambda: [first, second]
+        app._input_dir = lambda: self.directory
+        downgrade = '未找到 android.hardware.health 节点，设计容量已降级使用「batterystats 估算容量」'
+
+        def extract(_path):
+            return BatteryInfo(design_capacity=6000, design_capacity_source=DESIGN_SOURCE_ESTIMATED,
+                               min_learned_capacity=4500, parse_warnings=[downgrade])
+
+        extractor = Mock()
+        extractor.extract.side_effect = extract
+        with patch.object(battery_gui, 'BatteryExtractor', return_value=extractor), \
+                patch.object(battery_gui, 'Thread') as thread:
+            thread.return_value.start.side_effect = lambda: thread.call_args.kwargs['target']()
+            app._batch_summary()
+            app.root.after.call_args.args[1]()
+        text = app._show_result.call_args.args[0]
+        self.assertIn('90.00%', text)
+        self.assertIn('手动输入', text)
+        self.assertIn('first.zip', text)
+        redacted = app._report_variants['redacted.txt'] + app._report_variants['redacted.csv']
+        self.assertNotIn('first.zip', redacted)
+        self.assertIn('文件2', redacted)
+
+    def test_close_cancels_running_analysis_and_waits(self):
+        app = self.make_app()
+        app._cancel_event = threading.Event()
+        app._worker = Mock()
+        app._worker.is_alive.return_value = True
+        app._on_close()
+        self.assertTrue(app._cancel_event.is_set())
+        app._worker.join.assert_called_once_with(timeout=5)
+        app.root.destroy.assert_called_once_with()
 
     def test_stale_background_result_does_not_enable_export(self):
         app = self.make_app()

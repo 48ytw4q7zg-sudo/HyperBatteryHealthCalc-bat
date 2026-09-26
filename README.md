@@ -22,7 +22,7 @@
 - **Python 桌面端（CLI / GUI）**：共享 `battery_core.py`，支持批量分析、报告导出、中文耗电诊断。
 - **Windows x64 便携包**：双击 EXE 即用，自带 Python / Tcl-Tk 运行库，目标机器无需安装 Python 或 Node。
 
-健康度核心公式为 `(最小学习容量 / 设计容量) × 100%`，并统一五档评级。三端评分边界一致。
+健康度核心公式为 `(最小学习容量 / 设计容量) × 100%`，并统一五档评级。三端评分边界一致；证据不足（估算设计容量、学习容量无分化等）且低于 70% 时，三端同样把评级降为「明显衰减（证据不足，待复核）」。
 
 **电脑新手**看「新手教程」；**会终端**看「快速教程（大学生版）」。教程按**刚重装的干净 Windows x64** 编写，并写明官方验收边界（Win10 未实机、非签名包等）。
 
@@ -342,6 +342,13 @@ python battery_gui.py
 - **电池生命周期追踪**: 充电循环次数、估算满充容量、上次/最小/最大学习容量、系统报告满充容量、当前电量计数和充电状态
 - **中文耗电诊断**: 不只计算健康度，还解析亮屏/息屏耗电、屏幕亮度分布、Doze、唤醒锁、WiFi Multicast、连接切换、UID 前台/后台耗电拆分、蓝牙耗电/扫描/连接设备、移动网络流量、Wi-Fi 流量、CPU 负载和高占用进程，生成中文建议
 - **嵌套 ZIP 解析**: 自动穿透外层 ZIP 找到内层诊断 ZIP
+- **结论可信度**: 报告首屏为「结论摘要」——容量比健康度、BMS SoH（如有）、系统 health 状态三口径并列；标注设计容量来源与置信度（health 节点=高、charge_logger BMS=高、batterystats 估算=中、手动填写=用户声明）和证据强度（强/中/弱），并给出满电 Charge counter 与学习容量的交叉区间
+- **charge_logger（BMS）侧信道（仅桌面版）**: 自动识别诊断包内 `charge_logger*.tar/.csv/.log`，读取 `bms_chg_full / bms_chg_full_design / bms_cycle_count / battery_soh` 等字段，输出 SoH、循环次数、满充趋势（近 7/30 日变化，参考点须在 N～N×1.5 天内并标注对比日期；满充骤降时有 SoH 对照才判断“疑似校准”）、充电协议与温度（按整批中位数判断 ℃ / 0.1 ℃ 单位，剔除超出 -30～90 ℃ 的占位值）；与容量比相差超过 10 个百分点时告警“口径冲突”。BMS 设计容量不在 1000～20000 mAh、或与 batterystats 估算相差超过 30% 时不采用并提示。该格式尚未用多机型真实样本验证，识别不到字段时只提示、不猜测
+- **统计窗口质量与可行动项**: 有耗电统计时标注“抓包时在充电 / 短会话 / 高亮屏占比 / 接近完整放电周期”（只有容量快照时不标注，并提示“未提供足够的结构化耗电统计”），并按影响排序给出最多 4 条本次可行动项；系统 UID（如 1041 audioserver）给系统组件建议，游戏才给画质/帧率建议
+- **口径修正**: 应用耗电高于实际放电统计时不再显示“占总耗电 >100%”；power profile 与 Discharge 相差 >30% 时提示；息屏样本不足 5 分钟不下结论；Doze 为 0 标注“无样本”；连接切换在窗口已知时按每小时频率判断（≥20 次/小时且 ≥50 次），窗口未知才看总次数 ≥200；唤醒锁 0 次显示“次数未记录”；过滤 `0.0.0.0` 等伪包名，内置系统 UID 名称（1027=nfc、1041=audioserver），应用双开 `u999aNNN` 与主用户合并计算
+- **导出与隐私**: TXT（默认）、JSON（机器可读，含来源/置信度/窗口质量/BMS）、批量汇总 CSV（以 `= + - @` 开头的单元格加前导单引号，防止 Excel 当作公式）；可选脱敏导出（隐藏蓝牙设备名、应用包名、进程名、唤醒锁标签、Kernel 唤醒锁中的包名、告警里的文件路径和原始统计段，文件名改为“文件1/文件2…”）；报告带文件指纹（文件名、大小、SHA256 前 12 位、解析器版本）
+- **大文件**: 内层 ZIP 流式写入临时文件后解析（不再整包读入内存；Windows 上句柄关闭即由系统删除，进程被结束也不残留副本），跳过 `encrypt_voice_trigger.zip`、`*appLog.zip` 等无关包并在报告里汇总提示一次跳过数量，逐行关键字预筛；GUI 显示已读 MB 与耗时并可随时取消，关窗时先取消后台解析。54 MB 合成日志实测解析由约 24 秒降到约 4 秒
+- **多个内层包的顺序**: 统计字段由后解析的包覆盖；其它内层包先解析，bugreport 包最后解析（组内按文件名排序，与旧版一致），所以文件名带日期的多份 bugreport 中日期最新的一份生效
 
 ### 五档评级标准
 
@@ -354,6 +361,8 @@ python battery_gui.py
 | < 70% | 建议考虑更换电池 | `#e74c3c` |
 
 > 三端 (Web/CLI/GUI) 评分边界完全一致，使用 `100.0001` 下界区分"超出"与"极佳"，避免浮点 `100.0` 的边界歧义。
+>
+> 低于 70% 但证据强度不是「强」（设计容量为 batterystats 估算、学习容量三值无分化、当前容量来自满电 Charge counter，或与 BMS SoH 冲突）时，评级显示为「明显衰减（证据不足，待复核）」，颜色不变；健康度百分比本身不是售后官方结论。
 
 ---
 
@@ -372,6 +381,8 @@ python battery_gui.py
 ### 网页版
 
 直接用浏览器打开 `index.html`，选择诊断 ZIP 文件即可自动分析。如果自动提取设计容量失败，页面会显示手动输入框和「计算」按钮。
+
+网页版与桌面版共用证据强度、来源置信度和各项口径修正规则（`test_web_logic.cjs` 对两个网页做一致性回归）；charge_logger（BMS）分析、批量汇总、JSON/CSV 与脱敏导出目前只在桌面版提供。
 
 ### 命令行版 (CLI)
 
@@ -392,7 +403,18 @@ python battery_calc.py --output report.txt
 
 # 禁用彩色输出（重定向时）
 python battery_calc.py --no-color
+
+# 另存机器可读 JSON（含来源、置信度、窗口质量、BMS SoH；多个文件时为 {schema, reports, failures}）
+python battery_calc.py --json report.json
+
+# 生成可分享的脱敏报告，且不附原始统计段
+python battery_calc.py --redact --no-raw --output share.txt
+
+# 脚本/CI：细分退出码（0 全部完整，3 仅有部分数据或跳过，1 存在失败，2 参数错误）
+python battery_calc.py --detailed-exit-codes --no-pause
 ```
+
+一次分析多个 ZIP 时，终端和 `--output` 报告末尾会附「批量汇总」表（型号、健康度、证据强度、设计容量来源、循环次数、BMS SoH、统计窗口）；全部文件都失败时不写报告文件。`--json` 路径在分析前校验，不能与 `--output` 相同。`--redact` 时报告、JSON 和汇总表里的文件名都改为“文件N”。
 
 ### 图形界面版 (GUI)
 
@@ -405,6 +427,8 @@ python battery_gui.py
 # 或双击 run.bat（自动调用 VBS 无窗口启动）
 ```
 
+GUI 解析大包时状态栏显示已读 MB 与耗时，可点「取消」中止；「批量汇总」一次分析 input 目录全部 ZIP 并可另存 CSV，填写的设计容量与单文件分析一样覆盖自动值；「保存报告」可选 TXT 或 JSON，勾选「导出时脱敏」后保存的是脱敏版本。
+
 ### Windows 便携版 CLI
 
 ```powershell
@@ -413,9 +437,10 @@ python battery_gui.py
 .\HyperBatteryHealthCalc-cli.exe --input "D:\我的诊断" --no-pause
 .\HyperBatteryHealthCalc-cli.exe --capacity 5000 --recursive --no-pause
 .\HyperBatteryHealthCalc-cli.exe --output "reports\本次报告.txt" --no-pause
+.\HyperBatteryHealthCalc-cli.exe --json "reports\本次报告.json" --redact --no-pause
 ```
 
-相对输入/输出路径相对于 EXE 所在目录。退出码：`0` 成功；`1` 缺数据/坏 ZIP/无输入/导出失败；`2` 参数错误。
+相对输入/输出路径相对于 EXE 所在目录。退出码：`0` 成功；`1` 缺数据/坏 ZIP/无输入/导出失败；`2` 参数错误；加 `--detailed-exit-codes` 后，只有部分数据或跳过时返回 `3`。
 
 ---
 

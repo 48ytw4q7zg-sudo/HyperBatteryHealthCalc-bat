@@ -663,6 +663,79 @@ async function runRealZipCrcRegressions() {
     return failures;
 }
 
+function runEvidenceParityRegressions() {
+    let assertions = 0;
+    const weak = {
+        designCapacity: 6100, designCapacitySource: 'batterystats 估算容量',
+        lastLearnedCapacity: 4077, minLearnedCapacity: 4077, maxLearnedCapacity: 4077,
+        chargeCounter: 4019, batteryLevel: 100, batteryScale: 100, statusCode: 2, acPowered: true, healthCode: 2,
+        timeOnBatterySeconds: 5224, screenOnSeconds: 5112, screenOffSeconds: 112,
+        totalDischargeMah: 909, screenOnDischargeMah: 902, screenOffDischargeMah: 7,
+        screenDozeDischargeMah: 0, deviceDeepDozeDischargeMah: 0, connectivityChanges: 167,
+        computedDrainMah: 487, actualDrainMah: 909,
+        powerComponents: [{name: 'mobile_radio', mah: 200}, {name: 'screen', mah: 150}],
+        topUidPower: [{uid: 'u0a300', mah: 960}, {uid: 'u0a289', mah: 40}, {uid: 'u999a289', mah: 30}],
+        kernelWakelocks: [{name: 'game_popup', seconds: 19, count: 0}],
+        uidPackages: {u0a289: 'com.tencent.mm', u0a300: 'com.example.osgame'}
+    };
+    for (const page of pages) {
+        const {context} = loadPage(page);
+        const info = JSON.parse(JSON.stringify(weak));
+        const pct = 4077 / 6100 * 100;
+        assert.equal(context.healthEvidence(info).level, '弱', page);
+        assert.equal(context.ratingTextFor(info, pct, '建议考虑更换电池'), '明显衰减（证据不足，待复核）', page);
+        const strong = {designCapacity: 5000, designCapacitySource: 'hardware health 设计容量', lastLearnedCapacity: 3100,
+            minLearnedCapacity: 3000, maxLearnedCapacity: 3300};
+        assert.equal(context.ratingTextFor(strong, 60, '建议考虑更换电池'), '建议考虑更换电池', page);
+        const text = context.buildUsageDiagnostics(info, pct).join('\n');
+        for (const expected of [
+            '健康度 66.84%，按当前数据低于 70%，但证据强度为弱',
+            '健康度约 65.9%–66.8%',
+            '学习样本不足',
+            '系统 health 状态为「良好」',
+            '抓包时正在充电或已充满',
+            '短会话（放电窗口约 1小时27分钟）',
+            '样本过短，仅供参考',
+            '本次无有效屏幕 Doze 样本',
+            '本次无有效设备深度 Doze 样本',
+            'u0a300(com.example.osgame) 960.0 mAh（高于本次实际放电统计',
+            'u999a289(com.tencent.mm·应用双开)',
+            'com.tencent.mm（u0a289、u999a289）合计 70.0 mAh',
+            '相差 46%，两者来源不同',
+            'game_popup 19秒、次数未记录',
+            '连接切换 167 次（约 115 次/小时）'
+        ]) {
+            assert.ok(text.includes(expected), `${page}: missing ${expected}`);
+            assertions++;
+        }
+        assert.ok(!text.includes('占总耗电 105'), page);
+        const packages = {uidPackages: {}};
+        context.rememberUidPackage(packages, '0', '0.0.0.0');
+        context.rememberUidPackage(packages, 'u0a1', 'com.example.ok');
+        assert.deepEqual(JSON.parse(JSON.stringify(packages.uidPackages)), {u0a1: 'com.example.ok'}, page);
+        assert.equal(context.formatUidLabel('1041', {}), '1041(audioserver/音频服务)', page);
+        assert.equal(context.formatUidLabel('1027', {}), '1027(nfc/NFC)', page);
+        const cpu = {};
+        context.parseCpuSnapshot('Load: 1 / 2 / 3\nCPU usage from 1000ms to 0ms ago:\n  2.0% 100/com.low: 1.0% user + 1.0% kernel\n  9.0% 101/com.high: 5.0% user + 4.0% kernel\n16% TOTAL: 9% user + 7% kernel\n  50.0% 102/com.after.total: 25.0% user + 25.0% kernel\n', cpu);
+        assert.deepEqual(Array.from(cpu.topCpuProcesses, item => item.name), ['com.high', 'com.low'], page);
+        const power = {uidPackages: {}};
+        context.parsePowerUseStats('Estimated power use (mAh):\n  Capacity: 5000, Computed drain: 600, actual drain: 600\n  Global\n    wifi_2g: 12\n    camera-front: 3\n  UID real: 80\n', power);
+        assert.deepEqual(Array.from(power.powerComponents, item => item.name), ['wifi_2g', 'camera-front'], page);
+        const longWindow = {connectivityChanges: 150, timeOnBatterySeconds: 36000};
+        assert.ok(!context.buildUsageDiagnostics(longWindow, null).join('\n').includes('连接切换'), page);
+        const dayWindow = {connectivityChanges: 300, timeOnBatterySeconds: 86400};
+        assert.ok(!context.buildUsageDiagnostics(dayWindow, null).join('\n').includes('连接切换'), page);
+        const snapshot = {designCapacity: 5000, designCapacitySource: 'hardware health 设计容量', minLearnedCapacity: 4500,
+            statusCode: 2, acPowered: true, temperatureC: 30};
+        assert.equal(context.windowQualityLabels(snapshot).length, 0, page);
+        const snapshotLines = context.buildUsageDiagnostics(snapshot, 90);
+        assert.equal(snapshotLines[snapshotLines.length - 1], '本次 bugreport 未提供足够的结构化耗电统计，只能显示容量快照。', page);
+        assert.ok(!context.buildUsageDiagnostics({healthCode: 9}, null).join('\n').includes('系统 health 状态'), page);
+        assertions += 14;
+    }
+    console.log(`PASS: ${assertions} evidence/parity assertions`);
+}
+
 async function main() {
     let assertions = 0;
     for (const page of ['index.html', 'HyperBatteryHealthCalc-bat/index.html']) {
@@ -771,5 +844,6 @@ async function main() {
     if (await runExportRegressions()) process.exitCode = 1;
     await runRootPartialReportRegressions();
     if (await runRealZipCrcRegressions()) process.exitCode = 1;
+    runEvidenceParityRegressions();
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});

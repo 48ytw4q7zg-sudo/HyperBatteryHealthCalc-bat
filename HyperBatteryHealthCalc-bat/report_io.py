@@ -97,16 +97,38 @@ def write_text_atomic(destination: Path, text: str, *, encoding: str = "utf-8", 
     )
 
 
-def save_text_report(destination: Path, text: str, source: Path) -> Path:
-    """Atomically save a Notepad-compatible report without replacing its input."""
+def _checked_report_target(destination: Path, text: str, source: Path, suffix: str) -> Path:
     if not text.strip():
         raise ValueError("The report is empty")
     target = resolve_app_path(Path(destination))
     source = Path(source).resolve()
     if target == source or (target.exists() and source.exists() and target.samefile(source)):
         raise ValueError("The report cannot replace its diagnostic ZIP")
-    if target.suffix.lower() != ".txt":
-        raise ValueError("Choose a .txt report filename")
+    if target.suffix.lower() != suffix:
+        raise ValueError(f"Choose a {suffix} report filename")
+    return target
+
+
+def save_text_report(destination: Path, text: str, source: Path) -> Path:
+    """Atomically save a Notepad-compatible report without replacing its input."""
+    target = _checked_report_target(destination, text, source, ".txt")
+    return _write_text_atomic(
+        target, text, encoding="utf-8-sig", newline="\r\n",
+        normalize_for_notepad=True, add_final_newline=True, create_parents=False,
+    )
+
+
+def save_json_report(destination: Path, text: str, source: Path) -> Path:
+    """Atomically save machine-readable JSON (UTF-8 without BOM, LF)."""
+    target = _checked_report_target(destination, text, source, ".json")
+    return _write_text_atomic(
+        target, text, encoding="utf-8", newline="\n", add_final_newline=True, create_parents=False,
+    )
+
+
+def save_csv_report(destination: Path, text: str, source: Path) -> Path:
+    """Atomically save an Excel-friendly CSV (UTF-8 with BOM, CRLF)."""
+    target = _checked_report_target(destination, text, source, ".csv")
     return _write_text_atomic(
         target, text, encoding="utf-8-sig", newline="\r\n",
         normalize_for_notepad=True, add_final_newline=True, create_parents=False,

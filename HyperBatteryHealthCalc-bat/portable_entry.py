@@ -18,6 +18,17 @@ import zipfile
 from report_io import application_dir, resolve_app_path, save_text_report
 
 
+@contextlib.contextmanager
+def _temporary_files_under(directory: Path):
+    """Route tempfile users (inner-archive copies) into the contained self-test directory."""
+    previous = tempfile.tempdir
+    tempfile.tempdir = str(directory)
+    try:
+        yield
+    finally:
+        tempfile.tempdir = previous
+
+
 def create_synthetic_archive(path: Path) -> None:
     """Create only invented diagnostics, never copy a user's input archive."""
     inner = io.BytesIO()
@@ -80,7 +91,8 @@ def run_self_test(output_path: Path) -> int:
         check("no_console_interactive_guard", sys.stdin is not None or not is_interactive())
         # All temporary synthetic data is under the explicitly requested output
         # directory. Never instantiate the normal GUI against real input/.
-        with tempfile.TemporaryDirectory(prefix="battery-self-test-", dir=output_path.parent) as temporary:
+        with tempfile.TemporaryDirectory(prefix="battery-self-test-", dir=output_path.parent) as temporary, \
+                _temporary_files_under(Path(temporary).resolve()):
             temporary_dir = Path(temporary).resolve()
             check("synthetic_workspace_contained", temporary_dir.is_relative_to(output_path.parent.resolve()))
             input_dir = temporary_dir / "input"
@@ -90,6 +102,7 @@ def run_self_test(output_path: Path) -> int:
             check("nested_synthetic_zip", info.design_capacity == 5000 and info.current_capacity == 4500)
             check("synthetic_health", info.health_percentage == 90)
             check("synthetic_power_ranking", [(x.uid, x.mah) for x in info.top_uid_power[:2]] == [("u0a123", 60), ("1000", 30)])
+            check("inner_archive_temp_cleanup", not list(temporary_dir.glob("battery-inner-*")))
 
             class SyntheticApp(BatteryHealthApp):
                 def _input_dir(self) -> Path:

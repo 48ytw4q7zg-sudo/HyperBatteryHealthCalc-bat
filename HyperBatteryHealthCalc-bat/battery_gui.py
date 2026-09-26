@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import math
 import zipfile
@@ -13,10 +14,40 @@ from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 from typing import Optional
 from queue import Empty, Queue
-from threading import Thread
+from threading import Event, Thread
 
-from battery_core import BatteryExtractor, BatteryInfo, get_rating_text, get_rating_color
-from report_io import application_dir, resolve_app_path, save_text_report
+from battery_core import (
+    BatteryExtractor,
+    BatteryInfo,
+    ExtractionCancelled,
+    apply_manual_design_capacity,
+    build_report_payload,
+    file_fingerprint,
+    format_batch_summary,
+    format_batch_summary_csv,
+    format_fingerprint,
+    get_rating_color,
+    redacted_copy,
+    redacted_fingerprint,
+)
+from report_io import application_dir, resolve_app_path, save_csv_report, save_json_report, save_text_report
+
+PRIVACY_NOTE = '报告含应用包名、蓝牙设备名等使用痕迹；公开分享前建议勾选“导出时脱敏”。'
+
+
+def _safe_fingerprint(path) -> Optional[dict]:
+    try:
+        return file_fingerprint(path)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _progress_text(event: dict) -> str:
+    entry = str(event.get('entry') or '').replace('\\', '/').rsplit('/', 1)[-1]
+    size_mb = float(event.get('bytes_read') or 0) / (1024 * 1024)
+    elapsed = float(event.get('elapsed') or 0)
+    target = f' {entry}' if entry else ''
+    return f'正在解析{target}（已读 {size_mb:.1f} MB，{elapsed:.0f} 秒），可点击“取消”中止'
 
 if sys.platform == 'win32':
     try:
@@ -40,11 +71,15 @@ class BatteryHealthApp:
         self._report_text = ''
         self._report_source: Optional[Path] = None
         self._report_inputs: Optional[tuple[str, str]] = None
+        self._cancel_event: Optional[Event] = None
+        self._worker: Optional[Thread] = None
         self.file_path_index: dict[str, Path] = {}
         self.recursive_scan = tk.BooleanVar(value=False)
+        self.redact_export = tk.BooleanVar(value=False)
 
         self._build_ui()
         self._refresh_file_list()
+        self.root.protocol('WM_DELETE_WINDOW', self._on_close)
 
     def _build_ui(self) -> None:
         main = ttk.Frame(self.root, padding='15')
@@ -65,7 +100,7 @@ class BatteryHealthApp:
             note_frame, bg='#ebf8ff', fg='#2d3748',
             font=('Microsoft YaHei', 9),
             text='从诊断 ZIP 文件中提取电池数据并计算健康度。\n'
-                 '所有分析在本地完成，数据不会上传。',
+                 '所有分析在本地完成，数据不会上传；报告含应用包名/蓝牙设备名，分享前可勾选脱敏导出。',
             justify='left'
         ).pack(anchor='w')
 
@@ -90,6 +125,11 @@ class BatteryHealthApp:
             variable=self.recursive_scan,
             command=self._refresh_file_list
         ).pack(side='left')
+        ttk.Checkbutton(
+            scan_row,
+            text='导出时脱敏（隐藏蓝牙/包名/文件名/原始统计等）',
+            variable=self.redact_export,
+        ).pack(side='left', padx=(12, 0))
 
         self.capacity_frame = ttk.Frame(file_frame)
         self.capacity_frame.pack(fill='x')
@@ -125,6 +165,20 @@ class BatteryHealthApp:
             activeforeground='white', relief='flat', padx=14, pady=6,
             cursor='hand2', state='disabled', command=self._save_report)
         self.save_btn.pack(side='left', padx=(10, 0))
+
+        self.batch_btn = tk.Button(
+            btn_frame, text='批量汇总', font=('Microsoft YaHei', 9),
+            bg='#4a5568', fg='white', activebackground='#2d3748',
+            activeforeground='white', relief='flat', padx=14, pady=6,
+            cursor='hand2', command=self._batch_summary)
+        self.batch_btn.pack(side='left', padx=(10, 0))
+
+        self.cancel_btn = tk.Button(
+            btn_frame, text='取消', font=('Microsoft YaHei', 9),
+            bg='#e53e3e', fg='white', activebackground='#c53030',
+            activeforeground='white', relief='flat', padx=14, pady=6,
+            cursor='hand2', state='disabled', command=self._cancel_analysis)
+        self.cancel_btn.pack(side='left', padx=(10, 0))
 
         self.status_var = tk.StringVar(value='请选择诊断文件或点击"浏览..."')
         tk.Label(
@@ -206,9 +260,7 @@ class BatteryHealthApp:
         if not math.isfinite(value) or value <= 0:
             raise ValueError('设计容量必须是大于 0 的有限数值')
 
-        info.design_capacity = value
-        info.design_capacity_auto = False
-        info.design_capacity_source = '手动输入'
+        apply_manual_design_capacity(info, value)
 
     def _refresh_file_list(self) -> None:
         input_dir = self._input_dir()
@@ -282,23 +334,45 @@ class BatteryHealthApp:
         self._clear_result()
         capacity_text = self.capacity_entry.get()
         result_queue = Queue()
+        progress_queue = Queue()
+        cancel_event = Event()
+        self._cancel_event = cancel_event
+        # 通过属性传递进度/取消，extract() 调用签名保持不变。
+        self.extractor.progress_callback = progress_queue.put
+        self.extractor.cancel_event = cancel_event
+        self._set_busy_controls(True)
 
         def extract_in_background():
             try:
-                result_queue.put((self.extractor.extract(zip_path), None))
+                info = self.extractor.extract(zip_path)
+                result_queue.put((info, None, _safe_fingerprint(zip_path)))
             except Exception as exc:
-                result_queue.put((None, exc))
+                result_queue.put((None, exc, None))
 
         def collect_result():
+            latest_progress = None
+            while True:
+                try:
+                    latest_progress = progress_queue.get_nowait()
+                except Empty:
+                    break
+            if latest_progress is not None and not cancel_event.is_set():
+                self._set_status(_progress_text(latest_progress))
             try:
-                info, error = result_queue.get_nowait()
+                info, error, fingerprint = result_queue.get_nowait()
             except Empty:
                 self.root.after(50, collect_result)
                 return
             self._analysis_pending = False
+            self._cancel_event = None
+            self._set_busy_controls(False)
             self.analyze_btn.configure(state='normal', text=' 开始分析 ')
             if self.file_var.get().strip() != file_name or self.capacity_entry.get() != capacity_text:
                 self._set_status('文件或容量已改变，请点击“开始分析”更新结果')
+                return
+            if isinstance(error, ExtractionCancelled):
+                self._show_result('已取消本次解析，可重新点击“开始分析”。', error=True)
+                self._set_status('已取消解析')
                 return
             if error is not None:
                 message = 'ZIP 文件损坏或格式不正确' if isinstance(error, zipfile.BadZipFile) else str(error)
@@ -306,34 +380,183 @@ class BatteryHealthApp:
                 self._set_status('解析失败，可重新选择文件后重试')
                 return
             if manual.has_design_capacity:
-                info.design_capacity = manual.design_capacity
-                info.design_capacity_auto = False
-                info.design_capacity_source = '手动输入'
+                apply_manual_design_capacity(info, manual.design_capacity)
             self.current_info = info
             complete = info.has_design_capacity and info.current_capacity is not None
-            report = self._build_report(info) if complete else self._build_error_report(info)
+            build = self._build_report if complete else self._build_error_report
+            report = build(info, fingerprint)
+            redacted_info = redacted_copy(info)
+            hidden_fingerprint = redacted_fingerprint(fingerprint)
             self._show_result(report, error=not complete)
-            self._set_export_report(report, zip_path, (file_name, capacity_text))
+            self._set_export_report(
+                report, zip_path, (file_name, capacity_text),
+                redacted_text=build(redacted_info, hidden_fingerprint),
+                payload=build_report_payload(info, fingerprint),
+                redacted_payload=build_report_payload(redacted_info, hidden_fingerprint),
+            )
             self._set_status('分析完成' if complete else '分析完成：数据不完整，已保留本次电池快照')
 
-        Thread(target=extract_in_background, daemon=True).start()
+        self._worker = Thread(target=extract_in_background, daemon=True)
+        self._worker.start()
         self.root.after(50, collect_result)
 
-    def _build_report(self, info: BatteryInfo) -> str:
+    def _set_busy_controls(self, busy: bool) -> None:
+        cancel_btn = getattr(self, 'cancel_btn', None)
+        if cancel_btn is not None:
+            cancel_btn.configure(state='normal' if busy else 'disabled')
+        batch_btn = getattr(self, 'batch_btn', None)
+        if batch_btn is not None:
+            batch_btn.configure(state='disabled' if busy else 'normal')
+
+    def _cancel_analysis(self) -> None:
+        event = getattr(self, '_cancel_event', None)
+        if event is not None and not event.is_set():
+            event.set()
+            self._set_status('正在取消，请稍候...')
+
+    def _on_close(self) -> None:
+        """关窗时先取消后台解析并短暂等待，让内层包临时文件随句柄关闭而删除。"""
+        event = getattr(self, '_cancel_event', None)
+        if event is not None:
+            event.set()
+        worker = getattr(self, '_worker', None)
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=5)
+        self.root.destroy()
+
+    def _batch_summary(self) -> None:
+        """一次分析 input 目录全部 ZIP，输出横向对比表（可保存为 TXT/CSV）。"""
+        if getattr(self, '_analysis_pending', False):
+            return
+        try:
+            zip_files = self._collect_zip_files()
+        except OSError as exc:
+            messagebox.showerror('错误', f'读取 input 目录失败：{exc}')
+            return
+        if not zip_files:
+            messagebox.showinfo('提示', 'input 目录下暂无 ZIP 文件，无法批量汇总')
+            return
+        try:
+            manual = BatteryInfo()
+            self._apply_manual_capacity(manual)
+        except ValueError as exc:
+            self._set_status(str(exc))
+            return
+        self._invalidate_export()
+        self._analysis_pending = True
+        self.analyze_btn.configure(state='disabled', text='汇总中...')
+        self._clear_result()
+        file_name, capacity_text = self.file_var.get().strip(), self.capacity_entry.get()
+        input_dir = self._input_dir()
+        result_queue = Queue()
+        progress_queue = Queue()
+        cancel_event = Event()
+        self._cancel_event = cancel_event
+        self._set_busy_controls(True)
+
+        def run_batch():
+            extractor = BatteryExtractor()
+            extractor.progress_callback = progress_queue.put
+            extractor.cancel_event = cancel_event
+            results = []
+            try:
+                for path in zip_files:
+                    try:
+                        label = str(path.relative_to(input_dir))
+                    except ValueError:
+                        label = path.name
+                    try:
+                        info = extractor.extract(path)
+                    except ExtractionCancelled:
+                        raise
+                    except zipfile.BadZipFile:
+                        results.append((label, None, 'ZIP 文件损坏或格式不正确'))
+                        continue
+                    except Exception as exc:
+                        results.append((label, None, type(exc).__name__))
+                        continue
+                    # 与单文件分析一致：填写了设计容量就覆盖自动检测值。
+                    if manual.has_design_capacity:
+                        apply_manual_design_capacity(info, manual.design_capacity)
+                    results.append((label, info, None))
+                result_queue.put((results, None))
+            except Exception as exc:
+                result_queue.put((None, exc))
+
+        def collect_batch():
+            latest_progress = None
+            while True:
+                try:
+                    latest_progress = progress_queue.get_nowait()
+                except Empty:
+                    break
+            if latest_progress is not None and not cancel_event.is_set():
+                self._set_status(_progress_text(latest_progress))
+            try:
+                results, error = result_queue.get_nowait()
+            except Empty:
+                self.root.after(100, collect_batch)
+                return
+            self._analysis_pending = False
+            self._cancel_event = None
+            self._set_busy_controls(False)
+            self.analyze_btn.configure(state='normal', text=' 开始分析 ')
+            if error is not None:
+                cancelled = isinstance(error, ExtractionCancelled)
+                self._show_result('已取消批量汇总。' if cancelled else f'批量汇总失败: {error}', error=True)
+                self._set_status('已取消批量汇总' if cancelled else '批量汇总失败')
+                return
+            if self.file_var.get().strip() != file_name or self.capacity_entry.get() != capacity_text:
+                self._set_status('文件或容量已改变，请重新点击“批量汇总”')
+                return
+            # 脱敏版用序号代替文件名（可能带姓名或目录名）。
+            redacted_results = [
+                (f'文件{index}', redacted_copy(info) if info is not None else None, message)
+                for index, (_label, info, message) in enumerate(results, 1)
+            ]
+            text = format_batch_summary(results)
+            self._show_result(text, error=True)
+            self._set_export_report(
+                text, input_dir, (file_name, capacity_text),
+                redacted_text=format_batch_summary(redacted_results),
+                csv_text=format_batch_summary_csv(results),
+                redacted_csv_text=format_batch_summary_csv(redacted_results),
+            )
+            self._set_status(f'批量汇总完成：{len(results)} 个文件，可保存为 TXT 或 CSV')
+
+        self._worker = Thread(target=run_batch, daemon=True)
+        self._worker.start()
+        self.root.after(100, collect_batch)
+
+    def _build_report(self, info: BatteryInfo, fingerprint: Optional[dict] = None) -> str:
         lines = []
         sep = '=' * 54
         lines.append(sep)
         lines.append('  电池容量详细报告')
         lines.append(sep)
+        fingerprint_text = format_fingerprint(fingerprint)
+        if fingerprint_text:
+            lines.append(f'  文件指纹: {fingerprint_text}')
+
+        lines.append('')
+        lines.append('  --- 结论摘要 ---')
+        for item in info.summary_lines:
+            lines.append(f'  - {item}')
+        lines.append('')
+        lines.append('  --- 基本信息 ---')
 
         if info.device_name:
             lines.append(f'  设备型号: {info.device_name}')
+        firmware = ' / '.join(value for value in (info.device_codename, info.build_id, info.build_incremental) if value)
+        if firmware:
+            lines.append(f'  设备代号/固件: {firmware}')
         if info.report_time:
             lines.append(f'  诊断时间: {info.report_time}')
 
         if info.has_design_capacity:
-            source = info.design_capacity_source or ('自动检测' if info.design_capacity_auto else '手动输入')
-            source = f'({source})'
+            source = info.field_sources.get('design_capacity', '自动检测')
+            confidence = info.design_capacity_confidence
+            source = f'({source}，置信度：{confidence[0]})' if confidence else f'({source})'
             lines.append(f'  原始设计容量: {info.design_capacity:.0f} mAh  {source}')
         else:
             lines.append('  原始设计容量: 未检测到（填入设计容量后可计算健康度）')
@@ -346,8 +569,11 @@ class BatteryHealthApp:
             lines.append('  当前实际容量: 未检测到可用容量')
 
         if pct is not None:
-            rating = get_rating_text(pct)
+            rating = info.rating_text
             lines.append(f'  电池健康度: {pct:.2f}%  ({rating})')
+            level, reasons = info.health_evidence
+            reason_text = f"（{'、'.join(reasons)}）" if reasons else ''
+            lines.append(f'  结论证据强度: {level}{reason_text}')
         else:
             lines.append(f'  电池健康度: 无法计算')
 
@@ -389,8 +615,15 @@ class BatteryHealthApp:
             lines.append(f'  最大充电电压: {info.max_charging_voltage_mv} mV')
         if info.max_charging_power_w is not None:
             lines.append(f'  估算当前充电功率上限: {info.max_charging_power_w:.2f} W')
+        if info.bms_soh is not None:
+            lines.append(f'  BMS 健康度 (SoH): {info.bms_soh:.0f}%（电池管理芯片厂商口径）')
+        if info.bms_full_capacity is not None:
+            lines.append(f'  BMS 满充容量: {info.bms_full_capacity:.0f} mAh')
+        if info.bms_design_capacity is not None:
+            lines.append(f'  BMS 设计容量: {info.bms_design_capacity:.0f} mAh')
         if info.cycle_count is not None:
-            lines.append(f'  充电循环次数: {info.cycle_count} 次')
+            source = f'（来源：{info.cycle_count_source}）' if info.cycle_count_source else ''
+            lines.append(f'  充电循环次数: {info.cycle_count} 次{source}')
             lines.append(f'  提示: 满充容量会随着循环次数的增加而逐渐减少')
         else:
             lines.append(f'  充电循环次数: 未检测到 (不同机型数据有差异)')
@@ -415,8 +648,8 @@ class BatteryHealthApp:
         lines.append(sep)
         return '\n'.join(lines)
 
-    def _build_error_report(self, info: BatteryInfo) -> str:
-        lines = [self._build_report(info), '', '  部分信息已提取（以下说明缺失的数据）']
+    def _build_error_report(self, info: BatteryInfo, fingerprint: Optional[dict] = None) -> str:
+        lines = [self._build_report(info, fingerprint), '', '  部分信息已提取（以下说明缺失的数据）']
         if not info.has_design_capacity:
             lines.append('  [注意] 未检测到设计容量，请在上方手动输入后重试。')
         if info.current_capacity is None:
@@ -448,7 +681,7 @@ class BatteryHealthApp:
             return
 
         color = get_rating_color(pct)
-        rating = get_rating_text(pct)
+        rating = info.rating_text
 
         content = self.result_text.get('1.0', 'end')
         search_str = f'{pct:.2f}%  ({rating})'
@@ -474,15 +707,50 @@ class BatteryHealthApp:
         self._report_text = ''
         self._report_source = None
         self._report_inputs = None
+        self._report_variants: dict[str, str] = {}
         button = getattr(self, 'save_btn', None)
         if button is not None:
             button.configure(state='disabled')
 
-    def _set_export_report(self, text: str, source: Path, inputs: tuple[str, str]) -> None:
+    def _set_export_report(
+        self,
+        text: str,
+        source: Path,
+        inputs: tuple[str, str],
+        *,
+        redacted_text: str = '',
+        payload: Optional[dict] = None,
+        redacted_payload: Optional[dict] = None,
+        csv_text: str = '',
+        redacted_csv_text: str = '',
+    ) -> None:
         self._report_text = text
         self._report_source = source.resolve()
         self._report_inputs = inputs
+        # 同一分析快照的其它导出形态；保存时按后缀与“脱敏”开关选择。
+        variants = {'.txt': text, 'redacted.txt': redacted_text}
+        if payload is not None:
+            variants['.json'] = json.dumps(payload, ensure_ascii=False, indent=2)
+        if redacted_payload is not None:
+            variants['redacted.json'] = json.dumps(redacted_payload, ensure_ascii=False, indent=2)
+        if csv_text:
+            variants['.csv'] = csv_text
+        if redacted_csv_text:
+            variants['redacted.csv'] = redacted_csv_text
+        self._report_variants = variants
         self.save_btn.configure(state='normal')
+
+    def _export_content(self, suffix: str) -> str:
+        variants = getattr(self, '_report_variants', {}) or {}
+        redact_var = getattr(self, 'redact_export', None)
+        redact = bool(redact_var.get()) if redact_var is not None else False
+        if suffix == '.txt' and not redact:
+            return self._report_text
+        key = f'redacted{suffix}' if redact else suffix
+        content = variants.get(key, '')
+        if not content:
+            raise ValueError('当前分析结果不支持该导出格式' if not redact else '当前结果没有可用的脱敏版本')
+        return content
 
     def _export_is_current(self) -> bool:
         return (
@@ -497,11 +765,17 @@ class BatteryHealthApp:
             messagebox.showinfo('提示', '请先完成当前文件的分析，再保存报告。', parent=self.root)
             return
         text, source, inputs = self._report_text, self._report_source, self._report_inputs
+        variants = getattr(self, '_report_variants', {}) or {}
+        filetypes = [('文本报告', '*.txt')]
+        if '.json' in variants:
+            filetypes.append(('JSON 数据', '*.json'))
+        if '.csv' in variants:
+            filetypes.append(('CSV 表格', '*.csv'))
         try:
             selected = filedialog.asksaveasfilename(
                 parent=self.root, title='保存电池报告',
                 initialdir=str(application_dir()), initialfile='battery_report.txt',
-                defaultextension='.txt', filetypes=[('文本报告', '*.txt')],
+                defaultextension='.txt', filetypes=filetypes,
                 confirmoverwrite=True,
             )
         except tk.TclError as exc:
@@ -517,13 +791,18 @@ class BatteryHealthApp:
             self._invalidate_export()
             messagebox.showinfo('提示', '分析结果已改变，请重新分析后保存。', parent=self.root)
             return
+        suffix = Path(selected).suffix.lower()
+        writer = {'.json': save_json_report, '.csv': save_csv_report}.get(suffix, save_text_report)
         try:
-            destination = save_text_report(Path(selected), text, source)
+            content = self._export_content(suffix if suffix in ('.json', '.csv') else '.txt')
+            destination = writer(Path(selected), content, source)
         except (OSError, ValueError) as exc:
             self._set_status('保存失败，分析结果仍可再次保存')
             messagebox.showerror('保存失败', f'未能保存报告：{exc}', parent=self.root)
             return
-        self._set_status(f'报告已保存：{destination}')
+        redact_var = getattr(self, 'redact_export', None)
+        privacy = '' if redact_var is not None and redact_var.get() else f'；{PRIVACY_NOTE}'
+        self._set_status(f'报告已保存：{destination}{privacy}')
 
     def run(self) -> None:
         self.root.mainloop()

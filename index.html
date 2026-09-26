@@ -451,6 +451,178 @@
             [0,        70,       '建议考虑更换电池',                         '#e74c3c']
         ];
 
+        // ── 证据强度与口径修正（与 Python battery_core.py 同一套规则；BMS/charge_logger 深度分析仅桌面版提供）──
+        const SOFT_REPLACEMENT_RATING = '明显衰减（证据不足，待复核）';
+        const DESIGN_SOURCE_CONFIDENCE = {
+            'hardware health 设计容量': ['高', '来自系统 health 节点的出厂设计容量'],
+            'batterystats 估算容量': ['中', '来自 batterystats 功耗配置的估算容量，不一定等于官方标称容量'],
+            '手动输入': ['用户声明', '由用户手动填写，准确性取决于填写值']
+        };
+        // Android 固定系统 UID：1027 才是 nfc，1041 是 audioserver。
+        const SYSTEM_UID_NAMES = {
+            '0': 'root/内核', '1000': 'system/Android 系统', '1001': 'radio/电话与基带', '1002': 'bluetooth/蓝牙',
+            '1010': 'wifi/无线网络', '1013': 'media/媒体服务', '1021': 'gps/定位', '1027': 'nfc/NFC',
+            '1041': 'audioserver/音频服务', '1047': 'cameraserver/相机服务', '1073': 'network_stack/网络栈', '2000': 'shell'
+        };
+        const APP_UID_RE = /^u(\d+)a(\d+)$/;
+        const PACKAGE_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/;
+        const SHORT_SCREEN_OFF_SAMPLE_SECONDS = 300;
+
+        function learnedCapacityNote(info) {
+            const values = [info.lastLearnedCapacity, info.minLearnedCapacity, info.maxLearnedCapacity]
+                .map(Number).filter(value => Number.isFinite(value) && value > 0);
+            if (values.length < 3) return null;
+            const high = Math.max(...values);
+            if ((high - Math.min(...values)) / high >= 0.01) return null;
+            return '上次/最小/最大学习容量几乎相同（差异不足 1%），学习样本不足或尚未完成完整学习，健康度可能不稳定，建议完整充放电循环后复测。';
+        }
+
+        function healthEvidence(info) {
+            const reasons = [];
+            if (info.designCapacitySource === 'batterystats 估算容量') reasons.push('设计容量为 batterystats 估算值');
+            const capacity = getCurrentCapacityInfo(info);
+            if (capacity.value != null && capacity.source === '满电状态 Charge counter 估算') reasons.push('当前容量来自满电 Charge counter 估算');
+            if (learnedCapacityNote(info)) reasons.push('学习容量三值无分化');
+            return {level: reasons.length === 0 ? '强' : (reasons.length === 1 ? '中' : '弱'), reasons};
+        }
+
+        function ratingTextFor(info, percentage, baseRating) {
+            return percentage < 70 && healthEvidence(info).level !== '强' ? SOFT_REPLACEMENT_RATING : baseRating;
+        }
+
+        function designConfidenceFor(source) {
+            return (DESIGN_SOURCE_CONFIDENCE[source] || ['中', '来源未标注的自动检测值'])[0];
+        }
+
+        function healthBand(info) {
+            const design = Number(info.designCapacity);
+            const learned = Number(info.minLearnedCapacity);
+            const counter = Number(info.chargeCounter);
+            const scale = info.batteryScale == null ? 100 : Number(info.batteryScale);
+            const level = Number(info.batteryLevel);
+            if (!(design > 0) || !(learned > 0) || !(counter > 0) || !(scale > 0) || !Number.isFinite(level)) return null;
+            if (level > scale || level / scale < 0.95) return null;
+            const values = [learned / design * 100, counter / design * 100];
+            if (Math.abs(values[0] - values[1]) > 10) return null;
+            return [Math.min(...values), Math.max(...values)];
+        }
+
+        function hasUsageStats(info) {
+            const values = [info.timeOnBatterySeconds, info.totalDischargeMah, info.screenOnDischargeMah, info.screenOffDischargeMah, info.partialWakelockSeconds];
+            return values.some(value => value != null) || Boolean((info.powerComponents || []).length || (info.topUidPower || []).length);
+        }
+
+        function windowQualityLabels(info) {
+            const labels = [];
+            if (!hasUsageStats(info)) return labels;
+            const powered = [info.acPowered, info.usbPowered, info.wirelessPowered, info.dockPowered].some(value => value === true);
+            if (info.statusCode === 2 || info.statusCode === 5 || powered) labels.push('抓包时正在充电或已充满（耗电统计来自此前的放电窗口）');
+            const onBattery = info.timeOnBatterySeconds;
+            if (onBattery != null && onBattery > 0) {
+                if (onBattery < 3 * 3600) labels.push(`短会话（放电窗口约 ${formatDurationCn(onBattery)}）`);
+                if (info.screenOnSeconds != null && info.screenOnSeconds / onBattery >= 0.8) {
+                    labels.push(`高亮屏占比（亮屏约 ${Math.min(info.screenOnSeconds / onBattery * 100, 100).toFixed(0)}%）`);
+                }
+            }
+            if (Number(info.designCapacity) > 0 && info.totalDischargeMah != null && info.totalDischargeMah >= 0.8 * Number(info.designCapacity)) {
+                labels.push('接近完整放电周期');
+            }
+            return labels;
+        }
+
+        function healthDiagnosticLine(info, healthPct) {
+            const evidence = healthEvidence(info);
+            const reasonText = evidence.reasons.join('、');
+            if (healthPct < 70) {
+                if (evidence.level === '强') return `健康度 ${healthPct.toFixed(2)}%，已低于 70%，如果续航明显变差，建议优先考虑售后检测或更换电池。`;
+                return `健康度 ${healthPct.toFixed(2)}%，按当前数据低于 70%，但证据强度为${evidence.level}（${reasonText}），请结合官方检测、完整充放电循环后复测或 charge_logger 数据再判断，暂不建议仅凭此数字更换电池。`;
+            }
+            let line;
+            if (healthPct < 80) line = `健康度 ${healthPct.toFixed(2)}%，处于正常衰减区间，建议继续观察续航；低于 70% 再优先考虑更换。`;
+            else if (healthPct < 90) line = `健康度 ${healthPct.toFixed(2)}%，整体仍可用，属于轻中度衰减。`;
+            else line = `健康度 ${healthPct.toFixed(2)}%，容量状态较好。`;
+            if (evidence.level !== '强') line += `（证据强度：${evidence.level}，${reasonText}）`;
+            return line;
+        }
+
+        function evidenceDiagnosticLines(info, healthPct) {
+            const lines = [];
+            if (healthPct != null) {
+                lines.push(healthDiagnosticLine(info, healthPct));
+                const band = healthBand(info);
+                if (band && band[1] - band[0] >= 0.05) {
+                    lines.push(`满电 Charge counter 与学习容量交叉估算，健康度约 ${band[0].toFixed(1)}%–${band[1].toFixed(1)}%（Charge counter 仅在接近满电时可信），不必过度解读小数点后两位。`);
+                }
+            }
+            const note = learnedCapacityNote(info);
+            if (note) lines.push(note);
+            if (Number(info.designCapacity) > 0 && info.designCapacitySource === 'batterystats 估算容量') {
+                lines.push(`设计容量来源：batterystats 估算容量（置信度中），${DESIGN_SOURCE_CONFIDENCE['batterystats 估算容量'][1]}；健康度百分比仅供参考，不是售后官方结论。`);
+            }
+            // 未知健康码不输出诊断行，与桌面版一致。
+            const healthText = [1, 2, 3, 4, 5, 6, 7].includes(info.healthCode) ? getBatteryHealthText(info.healthCode) : null;
+            if (healthText) lines.push(`系统 health 状态为「${healthText}」，表示内核上报的电气状态（过热/过压/故障等），不等于满充容量比例。`);
+            const quality = windowQualityLabels(info);
+            if (quality.length) {
+                const limited = quality.some(label => /^(短会话|高亮屏|抓包时)/.test(label));
+                const verdict = limited ? '本次耗电结论只代表这个统计窗口，不宜直接当作全天续航或电池好坏的依据。' : '统计窗口接近完整放电周期，耗电结论代表性较好。';
+                lines.push(`统计窗口：${quality.join('、')}。${verdict}`);
+            }
+            return lines;
+        }
+
+        function drainConsistencyNote(info) {
+            const computed = info.computedDrainMah;
+            const total = info.totalDischargeMah;
+            if (computed == null || total == null || !(computed > 0) || !(total > 0)) return null;
+            const difference = Math.abs(computed - total) / total * 100;
+            if (difference <= 30) return null;
+            return `power profile 估算耗电 ${computed.toFixed(0)} mAh 与实际放电统计（Discharge）${total.toFixed(0)} mAh 相差 ${difference.toFixed(0)}%，两者来源不同，勿直接相加或换算；应用/模块排名只作相对参考。`;
+        }
+
+        function connectivityNote(info) {
+            const changes = info.connectivityChanges;
+            if (changes == null) return null;
+            const window = info.timeOnBatterySeconds;
+            const rate = window != null && window >= 1800 ? changes / (window / 3600) : null;
+            // 窗口已知时只看每小时频率；窗口未知才退回总次数阈值（与桌面版一致）。
+            if (rate != null ? (rate < 20 || changes < 50) : changes < 200) return null;
+            const rateText = rate != null ? `（约 ${rate.toFixed(0)} 次/小时）` : '';
+            const cellular = (info.powerComponents || []).slice(0, 3).some(item => item.name === 'mobile_radio');
+            const extra = cellular ? '，且 mobile_radio 位列耗电前三，弱网切换可能是基带高耗电的原因' : '';
+            return `连接切换 ${changes} 次${rateText}，网络环境频繁变化可能增加基带和 Wi-Fi 耗电${extra}。`;
+        }
+
+        function uidPackageFor(uid, uidPackages) {
+            if (uidPackages[uid]) return uidPackages[uid];
+            const match = APP_UID_RE.exec(uid);
+            return match && match[1] !== '0' ? (uidPackages[`u0a${match[2]}`] || null) : null;
+        }
+
+        function multiUserAppNote(items, uidPackages) {
+            const groups = new Map();
+            for (const item of items || []) {
+                const match = APP_UID_RE.exec(item.uid);
+                if (!match) continue;
+                if (!groups.has(match[2])) groups.set(match[2], []);
+                groups.get(match[2]).push(item);
+            }
+            const notes = [];
+            for (const [appId, members] of groups) {
+                if (members.length < 2) continue;
+                const packageName = members.map(member => uidPackageFor(member.uid, uidPackages)).find(Boolean);
+                const total = members.reduce((sum, member) => sum + member.mah, 0);
+                notes.push(`${packageName || `appId ${appId}`}（${members.map(member => member.uid).join('、')}）合计 ${total.toFixed(1)} mAh`);
+            }
+            return notes.length ? `同一应用的主用户与双开/分身合并计算：${notes.join('；')}。` : null;
+        }
+
+        function formatWakelockCount(item) {
+            if (item.count == null) return '';
+            if (item.count === 0 && item.seconds > 0) return '、次数未记录';
+            return `、${item.count} 次`;
+        }
+
         let autoExtractedInfo = {
             designCapacity: null,
             designCapacitySource: null,
@@ -1247,7 +1419,8 @@
                     : initialCapacity;
                 const percentage = (currentCapacity / finalInitialCapacity) * 100;
                 if (!Number.isFinite(finalInitialCapacity) || finalInitialCapacity <= 0 || !Number.isFinite(percentage)) return false;
-                const rating = getBatteryRating(percentage);
+                const rating = ratingTextFor(autoExtractedInfo, percentage, getBatteryRating(percentage));
+                const evidence = healthEvidence(autoExtractedInfo);
                 const designSource = autoExtractedInfo.designCapacitySource || (
                     autoExtractedInfo.designCapacity != null && autoExtractedInfo.designCapacity > 0 ? '自动检测' : '手动输入'
                 );
@@ -1274,9 +1447,11 @@
 
                 resultMessage += `
                                     <p>原始设计容量: <strong>${finalInitialCapacity} mAh</strong>
-                                    <span style="color: ${designSource === '手动输入' ? 'orange' : 'green'};">(${escHtml(designSource)})</span></p>
+                                    <span style="color: ${designSource === '手动输入' ? 'orange' : 'green'};">(${escHtml(designSource)}，置信度：${escHtml(designConfidenceFor(designSource))})</span></p>
                                     <p>当前实际容量: <strong>${currentCapacity} mAh</strong> <span style="color: #666;">（来源：${escHtml(capacityInfo.source)}）</span></p>
-                                    <p>电池健康度: <strong>${percentage.toFixed(2)}%</strong> <span style="margin-left: 10px; font-size: 0.9em; color: ${getRatingColor(percentage)}">(${rating})</span></p>
+                                    <p>电池健康度: <strong>${percentage.toFixed(2)}%</strong> <span style="margin-left: 10px; font-size: 0.9em; color: ${getRatingColor(percentage)}">(${escHtml(rating)})</span></p>
+                                    <p>结论证据强度: <strong>${evidence.level}</strong>${evidence.reasons.length ? `（${escHtml(evidence.reasons.join('、'))}）` : ''}</p>
+                                    <p style="font-size: 0.9em; color: #666;">网页版提供容量与耗电诊断；charge_logger（BMS SoH、满充趋势）深度分析请使用桌面版。</p>
                             `;
 
                 resultMessage += `
@@ -1659,9 +1834,11 @@
             const start = lines.findIndex(line => line.trim().startsWith('CPU usage from'));
             if (start < 0) return;
             const processes = [];
-            for (let i = start + 1; i < lines.length && processes.length < 5; i += 1) {
+            for (let i = start + 1; i < lines.length && i <= start + 400; i += 1) {
+                const current = lines[i].trim();
+                if (!current || current.includes('TOTAL:')) break;
                 const match = lines[i].match(/^  ([\d.]+)%\s+\d+\/(.+?):\s+([\d.]+)%\s+user\s+\+\s+([\d.]+)%\s+kernel/i);
-                if (!match) continue;
+                if (!match || processes.some(item => item.name === match[2].trim())) continue;
                 processes.push({
                     name: match[2].trim(),
                     percent: parseFloat(match[1]),
@@ -1669,7 +1846,7 @@
                     kernelPercent: parseFloat(match[4])
                 });
             }
-            if (processes.length) info.topCpuProcesses = processes;
+            if (processes.length) info.topCpuProcesses = processes.sort((a, b) => b.percent - a.percent).slice(0, 5);
         }
 
         function parsePowerUseStats(text, info) {
@@ -1704,7 +1881,7 @@
                     continue;
                 }
                 if (inGlobal) {
-                    const componentMatch = raw.match(/^\s{4}([A-Za-z_]+):\s*([\d.]+)(?:.*?\bduration:\s*(.+?))?\s*.*$/i);
+                    const componentMatch = raw.match(/^\s{4}([A-Za-z_][A-Za-z0-9_\-]*):\s*([\d.]+)(?:.*?\bduration:\s*(.+?))?\s*.*$/i);
                     if (componentMatch) {
                         components.push({
                             name: componentMatch[1],
@@ -1753,7 +1930,7 @@
         function rememberUidPackage(info, uid, packageName) {
             if (!info.uidPackages) info.uidPackages = {};
             const cleanPackage = String(packageName || '').trim().split(':')[0];
-            if (!uid || !cleanPackage) return;
+            if (!uid || !cleanPackage || !PACKAGE_NAME_RE.test(cleanPackage)) return;
             const existing = info.uidPackages[uid];
             if (existing == null || (String(existing).includes(':') && !cleanPackage.includes(':'))) {
                 info.uidPackages[uid] = cleanPackage;
@@ -1815,18 +1992,7 @@
         }
 
         function buildUsageDiagnostics(info, healthPct) {
-            const lines = [];
-            if (healthPct != null) {
-                if (healthPct < 70) {
-                    lines.push(`健康度 ${healthPct.toFixed(2)}%，已低于 70%，如果续航明显变差，建议优先考虑售后检测或更换电池。`);
-                } else if (healthPct < 80) {
-                    lines.push(`健康度 ${healthPct.toFixed(2)}%，处于正常衰减区间，建议继续观察续航；低于 70% 再优先考虑更换。`);
-                } else if (healthPct < 90) {
-                    lines.push(`健康度 ${healthPct.toFixed(2)}%，整体仍可用，属于轻中度衰减。`);
-                } else {
-                    lines.push(`健康度 ${healthPct.toFixed(2)}%，容量状态较好。`);
-                }
-            }
+            const lines = evidenceDiagnosticLines(info, healthPct);
 
             const screenOnShare = percent(autoNumber(info.screenOnDischargeMah), autoNumber(info.totalDischargeMah));
             if (screenOnShare != null) {
@@ -1849,17 +2015,25 @@
 
             const screenOffDrain = drainRate(info.screenOffDischargeMah, info.screenOffSeconds);
             if (screenOffDrain != null) {
-                const note = screenOffDrain >= 100 ? '偏高，建议检查后台唤醒、定位、同步和常驻应用。' : '处于可接受范围。';
-                lines.push(`息屏平均耗电约 ${screenOffDrain.toFixed(1)} mA，${note}`);
+                if (info.screenOffSeconds != null && info.screenOffSeconds < SHORT_SCREEN_OFF_SAMPLE_SECONDS) {
+                    lines.push(`息屏平均耗电约 ${screenOffDrain.toFixed(1)} mA，但息屏样本仅 ${formatDurationCn(info.screenOffSeconds)}，样本过短，仅供参考，不能据此判断待机耗电。`);
+                } else {
+                    const note = screenOffDrain >= 100 ? '偏高，建议检查后台唤醒、定位、同步和常驻应用。' : '处于可接受范围。';
+                    lines.push(`息屏平均耗电约 ${screenOffDrain.toFixed(1)} mA，${note}`);
+                }
             }
 
             const screenDozeShare = percent(info.screenDozeDischargeMah, info.totalDischargeMah);
-            if (screenDozeShare != null) {
+            if (info.screenDozeDischargeMah != null && info.screenDozeDischargeMah <= 0) {
+                lines.push('本次无有效屏幕 Doze 样本（0 mAh），通常是几乎全程亮屏或未进入息屏显示，不代表 Doze 耗电“正常为零”。');
+            } else if (screenDozeShare != null) {
                 lines.push(`屏幕 Doze 耗电 ${info.screenDozeDischargeMah.toFixed(1)} mAh，占总耗电 ${screenDozeShare.toFixed(1)}%，通常对应息屏显示或低功耗显示阶段。`);
             }
 
             const deepDozeShare = percent(info.deviceDeepDozeDischargeMah, info.totalDischargeMah);
-            if (deepDozeShare != null) {
+            if (info.deviceDeepDozeDischargeMah != null && info.deviceDeepDozeDischargeMah <= 0) {
+                lines.push('本次无有效设备深度 Doze 样本（0 mAh），说明统计窗口内几乎没有长时间静置待机，无法评估待机耗电。');
+            } else if (deepDozeShare != null) {
                 lines.push(`设备深度 Doze 耗电 ${info.deviceDeepDozeDischargeMah.toFixed(1)} mAh，占总耗电 ${deepDozeShare.toFixed(1)}%，可用于判断长时间待机阶段的系统耗电占比。`);
             }
 
@@ -1872,7 +2046,12 @@
                 const stats = { totalDischargeMah: info.totalDischargeMah };
                 const top = formatTopUidPower(info.topUidPower.slice(0, 3), info.uidPackages || {}, stats);
                 lines.push(`最高耗电 UID：${top}，需要结合系统 UID/应用包名映射定位具体应用或系统服务。`);
+                const merged = multiUserAppNote(info.topUidPower, info.uidPackages || {});
+                if (merged) lines.push(merged);
             }
+
+            const drainNote = drainConsistencyNote(info);
+            if (drainNote) lines.push(drainNote);
 
             if (info.partialWakelockSeconds != null) {
                 const share = percent(info.partialWakelockSeconds, info.timeOnBatterySeconds);
@@ -1882,13 +2061,13 @@
 
             if (info.kernelWakelocks && info.kernelWakelocks.length) {
                 const item = info.kernelWakelocks[0];
-                const count = item.count != null ? `、${item.count} 次` : '';
+                const count = formatWakelockCount(item);
                 lines.push(`Kernel 唤醒锁最长：${item.name} ${formatDurationCn(item.seconds)}${count}，用于判断系统内核或硬件链路是否长期阻止休眠。`);
             }
 
             if (info.partialWakelocks && info.partialWakelocks.length) {
                 const item = info.partialWakelocks[0];
-                const count = item.count != null ? `、${item.count} 次` : '';
+                const count = formatWakelockCount(item);
                 lines.push(`应用部分唤醒锁最长：${formatUidName(item.name, info.uidPackages || {})} ${formatDurationCn(item.seconds)}${count}，这是后台耗电排查的首要线索。`);
             }
 
@@ -1897,9 +2076,8 @@
                 lines.push(`WiFi Multicast 唤醒锁 ${count}累计约 ${formatDurationCn(info.wifiMulticastWakelockSeconds)}，投屏、局域网发现或部分应用可能增加后台耗电。`);
             }
 
-            if (info.connectivityChanges != null && info.connectivityChanges >= 200) {
-                lines.push(`连接切换 ${info.connectivityChanges} 次，网络环境频繁变化可能增加基带和 Wi-Fi 耗电。`);
-            }
+            const connectivity = connectivityNote(info);
+            if (connectivity) lines.push(connectivity);
 
             if (info.bluetoothDrainMah != null) {
                 const parts = [`蓝牙耗电 ${info.bluetoothDrainMah.toFixed(1)} mAh`];
@@ -1949,7 +2127,8 @@
                 }
             }
 
-            return lines.length ? lines : ['本次 bugreport 未提供足够的结构化耗电统计，只能显示容量快照。'];
+            if (!hasUsageStats(info) || !lines.length) lines.push('本次 bugreport 未提供足够的结构化耗电统计，只能显示容量快照。');
+            return lines;
         }
 
         function autoNumber(value) {
@@ -1997,6 +2176,9 @@
 
         function formatMahWithShare(mah, totalDischargeMah) {
             const share = percent(mah, totalDischargeMah);
+            if (share != null && share > 100) {
+                return `${mah.toFixed(1)} mAh（高于本次实际放电统计，属 power profile 估算口径，仅用于排名）`;
+            }
             const shareText = share != null ? `，占总耗电 ${share.toFixed(1)}%` : '';
             return `${mah.toFixed(1)} mAh${shareText}`;
         }
@@ -2051,8 +2233,12 @@
         }
 
         function formatUidLabel(uid, uidPackages) {
-            const packageName = uidPackages[uid];
-            return packageName ? `${uid}(${packageName})` : uid;
+            const packageName = uidPackageFor(uid, uidPackages);
+            const match = APP_UID_RE.exec(uid);
+            const userNote = match && match[1] !== '0' ? (match[1] === '999' ? '·应用双开' : `·用户${match[1]}`) : '';
+            if (packageName) return `${uid}(${packageName}${userNote})`;
+            if (SYSTEM_UID_NAMES[uid]) return `${uid}(${SYSTEM_UID_NAMES[uid]})`;
+            return userNote ? `${uid}(${userNote.slice(1)})` : uid;
         }
 
         function formatUidName(name, uidPackages) {

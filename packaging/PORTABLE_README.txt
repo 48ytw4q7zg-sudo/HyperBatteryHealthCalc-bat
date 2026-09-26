@@ -7,7 +7,9 @@
 3. 把自己的诊断 ZIP 放入程序旁的 input 文件夹，点击“刷新文件列表”；
    或点击“浏览...”选择电脑上的诊断 ZIP，然后点击“开始分析”。
 4. 如未能检测到设计容量，可手动填入设计容量后重新分析。
-5. 分析完成后点击“保存报告”导出 TXT 并选择保存位置；数据不完整时也可保存本次快照。
+5. 分析完成后点击“保存报告”导出 TXT 或 JSON 并选择保存位置；数据不完整时也可保存本次快照。
+   报告含应用包名、蓝牙设备名等使用痕迹，公开分享前勾选“导出时脱敏”。
+   大文件解析时状态栏显示进度，可点“取消”；“批量汇总”可一次分析 input 内全部 ZIP 并另存 CSV。
    命令行批量分析与导出见下面的 CLI 入口。
 
 适用范围
@@ -24,12 +26,14 @@
   .\HyperBatteryHealthCalc-cli.exe --input "D:\我的诊断" --no-pause
   .\HyperBatteryHealthCalc-cli.exe --capacity 5000 --recursive --no-pause
   .\HyperBatteryHealthCalc-cli.exe --output "reports\本次报告.txt" --no-pause
+  .\HyperBatteryHealthCalc-cli.exe --json "reports\本次报告.json" --redact --no-pause
 
 CLI 默认扫描 EXE 旁的 input，并将可提取的完整/部分快照保存为
 reports\battery-report.txt。再次运行会原子替换同名报告；需要保留旧报告时，
 用 --output 指定新的文件名。CLI 的相对输入/输出路径相对于 EXE 文件夹。
 退出码 0 表示全部分析成功，1 表示缺失数据、坏 ZIP、无输入或导出失败；
 2 表示命令参数错误。缺少容量时仍尽可能保留本次快照。
+加 --detailed-exit-codes 后：0 全部完整，3 仅有部分数据或跳过，1 存在失败。
 
 内置自检（只生成合成数据，不读取 input 里的真实文件）
   .\HyperBatteryHealthCalc.exe --self-test --self-test-output "gui-self-test.json"
