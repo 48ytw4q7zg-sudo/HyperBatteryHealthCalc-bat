@@ -18,6 +18,7 @@ import time
 from copy import deepcopy
 from datetime import date, datetime
 import re
+import sys
 import zipfile
 from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
@@ -1174,11 +1175,50 @@ class _ExtractRun:
                 logger.debug("progress callback failed", exc_info=True)
 
     def summary(self) -> dict[str, float]:
-        return {
+        stats = {
             "entries": self.entries,
             "bytes_read": self.bytes_read,
             "elapsed_seconds": round(time.perf_counter() - self.started, 3),
         }
+        peak = _peak_memory_bytes()
+        if peak is not None:
+            # 进程级峰值（含界面本身），用于大包性能回归对比，不是单次解析的精确增量。
+            stats["peak_memory_mb"] = round(peak / (1024 * 1024), 1)
+        return stats
+
+
+def _peak_memory_bytes() -> Optional[int]:
+    """进程峰值内存：Windows 取 PeakWorkingSetSize，其它平台取 ru_maxrss；取不到返回 None。"""
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            from ctypes import wintypes
+
+            class _Counters(ctypes.Structure):
+                _fields_ = [
+                    ('cb', wintypes.DWORD), ('PageFaultCount', wintypes.DWORD),
+                    ('PeakWorkingSetSize', ctypes.c_size_t), ('WorkingSetSize', ctypes.c_size_t),
+                    ('QuotaPeakPagedPoolUsage', ctypes.c_size_t), ('QuotaPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t), ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+                    ('PagefileUsage', ctypes.c_size_t), ('PeakPagefileUsage', ctypes.c_size_t),
+                ]
+
+            # 独立的 WinDLL 实例：设置 argtypes 不影响进程里其它模块共用的 ctypes.windll.kernel32。
+            kernel32 = ctypes.WinDLL('kernel32')
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Counters), wintypes.DWORD]
+            kernel32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+            counters = _Counters()
+            counters.cb = ctypes.sizeof(counters)
+            if kernel32.K32GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+                return int(counters.PeakWorkingSetSize)
+            return None
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return int(peak if sys.platform == 'darwin' else peak * 1024)
+    except Exception:
+        logger.debug("peak memory unavailable", exc_info=True)
+        return None
 
 
 class BatteryExtractor:
@@ -1465,39 +1505,35 @@ class BatteryExtractor:
         return [name for _group, name in sorted(candidates)], skipped
 
     def _parse_health_stream(self, zf: zipfile.ZipFile, filename: str, info: BatteryInfo, run: Optional[_ExtractRun] = None) -> None:
+        """读完整个 health 节点（文件很小），同一字段多次出现时取最后一次（最新快照）并提示。"""
         run = run or _ExtractRun()
+        seen: dict[str, list[int]] = {'design': [], 'cycle': [], 'full': []}
+        patterns = (('design', self._RE_DESIGN_CAPACITY), ('cycle', self._RE_CYCLE_COUNT), ('full', self._RE_FULL_CAPACITY))
         with zf.open(filename) as raw:
             text_stream = io.TextIOWrapper(raw, encoding='utf-8-sig', errors='replace')
             for line in text_stream:
                 run.advance(len(line))
-                line = line.rstrip('\n\r')
-
-                if not info.has_design_capacity or info.design_capacity_source != DESIGN_SOURCE_HEALTH:
-                    m = self._RE_DESIGN_CAPACITY.search(line)
-                    if m and int(m.group(1)) > 0:
-                        info.design_capacity = int(m.group(1)) / 1000
-                        info.design_capacity_source = DESIGN_SOURCE_HEALTH
-
-                if info.cycle_count is None:
-                    m = self._RE_CYCLE_COUNT.search(line)
+                for name, pattern in patterns:
+                    m = pattern.search(line)
                     if m:
-                        info.cycle_count = int(m.group(1))
-                        info.cycle_count_source = CYCLE_SOURCE_HEALTH
+                        seen[name].append(int(m.group(1)))
 
-                if info.full_capacity is None:
-                    m = self._RE_FULL_CAPACITY.search(line)
-                    if m:
-                        info.full_capacity = int(m.group(1)) / 1000
+        designs = [value for value in seen['design'] if value > 0]
+        if designs and (not info.has_design_capacity or info.design_capacity_source != DESIGN_SOURCE_HEALTH):
+            info.design_capacity = designs[-1] / 1000
+            info.design_capacity_source = DESIGN_SOURCE_HEALTH
+        if seen['cycle'] and info.cycle_count is None:
+            info.cycle_count = seen['cycle'][-1]
+            info.cycle_count_source = CYCLE_SOURCE_HEALTH
+        if seen['full'] and info.full_capacity is None:
+            info.full_capacity = seen['full'][-1] / 1000
 
-                if (
-                    info.design_capacity is not None
-                    and info.cycle_count is not None
-                    and info.full_capacity is not None
-                ):
-                    # CRC/read failures must surface before the candidate is committed.
-                    while text_stream.read(64 * 1024):
-                        run.check()
-                    break
+        labels = {'design': 'batteryFullChargeDesignCapacityUah', 'cycle': 'batteryCycleCount', 'full': 'batteryFullCharge'}
+        for name, values in seen.items():
+            if len(set(values)) > 1:
+                info.parse_warnings.append(
+                    f'health 节点中 {labels[name]} 出现多个不同值（首次 {values[0]}、末次 {values[-1]}），已采用末次'
+                )
 
     def _parse_bugreport_stream(self, zf: zipfile.ZipFile, filename: str, info: BatteryInfo, run: Optional[_ExtractRun] = None) -> None:
         run = run or _ExtractRun()

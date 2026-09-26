@@ -428,6 +428,7 @@
         <button id="export-report-btn" disabled>导出报告 (txt)</button>
 
         <div id="status" class="status"></div>
+        <button id="cancel-parse-btn" type="button" style="display: none;">取消解析</button>
         <div id="result" class="result"></div>
     </div>
 
@@ -717,6 +718,7 @@
             document.getElementById('zip-file').addEventListener('change', handleFileSelect);
             document.getElementById('export-report-btn').addEventListener('click', saveReportAsTxt);
             document.getElementById('initial-capacity').addEventListener('input', handleCapacityInput);
+            document.getElementById('cancel-parse-btn').addEventListener('click', cancelActiveParse);
         });
 
         function handleFileSelect() {
@@ -747,13 +749,62 @@
             return lowerName.includes(keyword.toLowerCase()) && lowerName.endsWith('.txt');
         }
 
+        // ── 解析进度与取消（两个网页共用同一份代码；取消会作废本次解析，已发出的读取结果会被丢弃）──
+        let activeParseAbort = null;
+        let activeParseToken = 0;
+        let parseInProgress = false;
+
+        function beginParseProgress() {
+            if (activeParseAbort) activeParseAbort.abort();
+            activeParseAbort = typeof AbortController === 'function' ? new AbortController() : null;
+            activeParseToken += 1;
+            parseInProgress = true;
+            const button = document.getElementById('cancel-parse-btn');
+            if (button) button.style.display = 'block';
+            return activeParseToken;
+        }
+
+        function endParseProgress(token) {
+            if (token !== activeParseToken) return;
+            activeParseAbort = null;
+            parseInProgress = false;
+            const button = document.getElementById('cancel-parse-btn');
+            if (button) button.style.display = 'none';
+        }
+
+        function entryReadOptions(filename) {
+            const label = String(filename || '').split('/').pop();
+            const options = { checkSignature: true };
+            if (activeParseAbort) options.signal = activeParseAbort.signal;
+            options.onprogress = (loaded, total) => {
+                if (!parseInProgress) return;
+                const read = (Number(loaded) || 0) / 1048576;
+                const size = Number(total) > 0 ? ` / ${(Number(total) / 1048576).toFixed(1)}` : '';
+                showStatus(`正在解析 ${label}（已读 ${read.toFixed(1)}${size} MB），可点击“取消解析”中止`);
+            };
+            return options;
+        }
+
+        function cancelActiveParse() {
+            if (!parseInProgress) return;
+            if (activeParseAbort) activeParseAbort.abort();
+            invalidateActiveParse();
+            endParseProgress(activeParseToken);
+            clearExportReport();
+            showStatus('已取消解析；可重新选择文件，或点击“计算”重新解析。');
+        }
+
+        function invalidateActiveParse() {
+            parseRevision += 1;
+        }
+
         function isZipEntry(filename) {
             return (filename || '').toLowerCase().endsWith('.zip');
         }
 
         async function parseHealthTxtEntry(entry, infoTarget) {
             assertTextEntryWithinLimit(entry);
-            const txt = await entry.getData(new zip.TextWriter(), { checkSignature: true });
+            const txt = await entry.getData(new zip.TextWriter(), entryReadOptions(entry.filename));
             const designMatch = RE_DESIGN.exec(txt);
             const designCapacity = designMatch ? Number(designMatch[1]) / 1000 : null;
             if (Number.isFinite(designCapacity) && designCapacity > 0 && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
@@ -768,7 +819,7 @@
 
         async function parseBugreportTxtEntry(entry, infoTarget) {
             assertTextEntryWithinLimit(entry);
-            const txt = await entry.getData(new zip.TextWriter(), { checkSignature: true });
+            const txt = await entry.getData(new zip.TextWriter(), entryReadOptions(entry.filename));
             parseBugreportText(txt, infoTarget);
         }
 
@@ -862,6 +913,7 @@
                 }
             };
 
+            const progressToken = beginParseProgress();
             try {
                 reader = cachedResult ? null : new zip.ZipReader(new zip.BlobReader(file));
                 const entries = reader ? await reader.getEntries() : [];
@@ -881,7 +933,7 @@
                         let innerBlob = null;
                         let innerReader = null;
                         try {
-                            innerBlob = await entry.getData(new zip.BlobWriter('application/zip'), { checkSignature: true });
+                            innerBlob = await entry.getData(new zip.BlobWriter('application/zip'), entryReadOptions(entry.filename));
                             if (!isCurrent()) return;
                             innerReader = new zip.ZipReader(new zip.BlobReader(innerBlob));
                             const innerEntries = await innerReader.getEntries();
@@ -985,6 +1037,7 @@
                 if (reader) {
                     try { await reader.close(); } catch (closeError) { console.warn('关闭诊断包失败', closeError); }
                 }
+                endParseProgress(progressToken);
             }
         }
 
@@ -1920,10 +1973,10 @@
             return '';
         }
 
-        function escHtml(s) {
-            const d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
+        function escHtml(value) {
+            const div = document.createElement('div');
+            div.textContent = String(value);
+            return div.innerHTML;
         }
 
         function showResult(el, msg, ok) {

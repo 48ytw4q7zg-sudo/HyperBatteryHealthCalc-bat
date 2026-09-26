@@ -736,6 +736,45 @@ function runEvidenceParityRegressions() {
     console.log(`PASS: ${assertions} evidence/parity assertions`);
 }
 
+async function runProgressAndDriftRegressions() {
+    let assertions = 0;
+    for (const name of pages) {
+        const page = loadPage(name);
+        page.context.zip = createZipRuntime();
+        const control = delayedEntry();
+        const pending = choose(page, {name: 'slow.zip', size: 1, entries: [control.entry]});
+        await waitForRead(control);
+        assert.equal(page.element('cancel-parse-btn').style.display, 'block', `${name}: cancel must be offered while reading`);
+        page.context.entryReadOptions('dump/bugreport-x.txt').onprogress(1048576, 2097152);
+        assert.match(page.element('status').textContent, /正在解析 bugreport-x\.txt（已读 1\.0 \/ 2\.0 MB）/, name);
+        page.element('cancel-parse-btn').click();
+        assert.match(page.element('status').textContent, /已取消解析/, name);
+        assert.equal(page.element('cancel-parse-btn').style.display, 'none', name);
+        control.resolve('[ro.product.model]: [Late Device]\n' + stats(5000));
+        await pending;
+        assert.doesNotMatch(page.element('result').innerHTML, /Late Device/, `${name}: a cancelled parse must not render`);
+        assert.equal(page.context.entryReadOptions('x.txt').checkSignature, true, name);
+        assertions += 6;
+    }
+    // 两个网页同名函数必须逐字一致，只放行各自的界面函数；防止一页修了另一页漏改。
+    const normalized = pages.map(page => fs.readFileSync(path.join(__dirname, page), 'utf8').replace(/\r\n/g, '\n'));
+    const source = (html, name) => {
+        const start = html.indexOf(`\n        function ${name}(`);
+        if (start < 0) return null;
+        const end = html.indexOf('\n        }\n', start + 1);
+        return end < 0 ? null : html.slice(start, end + 10);
+    };
+    const allowedDifferences = new Set(['handleFileSelect', 'invalidateActiveParse', 'setExportReport', 'showResult',
+        'showError', 'showStatus', 'toggleOriginalText']);
+    const names = [...new Set([...normalized[0].matchAll(/\n        function (\w+)\(/g)].map(match => match[1]))];
+    const shared = names.filter(name => source(normalized[1], name) !== null && !allowedDifferences.has(name));
+    const drifted = shared.filter(name => source(normalized[0], name) !== source(normalized[1], name));
+    assert.deepEqual(drifted, [], `shared web functions drifted between pages: ${drifted.join(', ')}`);
+    assert.ok(shared.length >= 60, 'the drift gate must keep covering the shared analysis logic');
+    assertions += 2;
+    console.log(`PASS: ${assertions} progress/cancel and drift assertions (${shared.length} functions identical in both pages)`);
+}
+
 async function main() {
     let assertions = 0;
     for (const page of ['index.html', 'HyperBatteryHealthCalc-bat/index.html']) {
@@ -845,5 +884,6 @@ async function main() {
     await runRootPartialReportRegressions();
     if (await runRealZipCrcRegressions()) process.exitCode = 1;
     runEvidenceParityRegressions();
+    await runProgressAndDriftRegressions();
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});

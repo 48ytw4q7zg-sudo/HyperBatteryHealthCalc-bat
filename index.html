@@ -428,6 +428,7 @@
         <button id="export-report-btn" disabled>导出报告 (txt)</button>
 
         <div id="status" class="status"></div>
+        <button id="cancel-parse-btn" type="button" style="display: none;">取消解析</button>
         <div id="result" class="result"></div>
     </div>
 
@@ -467,6 +468,38 @@
         const APP_UID_RE = /^u(\d+)a(\d+)$/;
         const PACKAGE_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/;
         const SHORT_SCREEN_OFF_SAMPLE_SECONDS = 300;
+        const RE_TIME_ON_BATTERY = /Time on battery:\s*([\ddhms .]+)\s*\(/i;
+        const RE_SCREEN_OFF_TIME = /Time on battery screen off:\s*([\ddhms .]+)\s*\(/i;
+        const RE_SCREEN_ON_TIME = /Screen on:\s*([\ddhms .]+)\s*\(/i;
+        const RE_TOTAL_DISCHARGE = /^\s*Discharge:\s*([\d.]+)\s*mAh/im;
+        const RE_SCREEN_OFF_DISCHARGE = /Screen off discharge:\s*([\d.]+)\s*mAh/i;
+        const RE_SCREEN_DOZE_DISCHARGE = /Screen doze discharge:\s*([\d.]+)\s*mAh/i;
+        const RE_SCREEN_ON_DISCHARGE = /Screen on discharge:\s*([\d.]+)\s*mAh/i;
+        const RE_DEEP_DOZE_DISCHARGE = /Device deep doze discharge:\s*([\d.]+)\s*mAh/i;
+        const RE_SCREEN_BRIGHTNESS_ITEM = /^\s*(dark|dim|medium|light|bright)\s+(.+?)\s+\(([\d.]+)%\)/i;
+        const RE_FULL_WAKELOCK = /Total full wakelock time:\s*([\ddhms .]+)/i;
+        const RE_PARTIAL_WAKELOCK = /Total partial wakelock time:\s*([\ddhms .]+)/i;
+        const RE_WIFI_MULTICAST_COUNT = /Total WiFi Multicast wakelock Count:\s*(\d+)/i;
+        const RE_WIFI_MULTICAST_TIME = /Total WiFi Multicast wakelock time:\s*([\ddhms .]+)/i;
+        const RE_CONNECTIVITY_CHANGES = /Connectivity changes:\s*(\d+)/i;
+        const RE_CELLULAR_KERNEL_ACTIVE = /Cellular kernel active time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_CELLULAR_RX_TIME = /Cellular Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_CELLULAR_DATA_RECEIVED = /Cellular data received:\s*(\S+)/i;
+        const RE_CELLULAR_DATA_SENT = /Cellular data sent:\s*(\S+)/i;
+        const RE_WIFI_SCAN_TIME = /WiFi Scan time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_WIFI_DATA_RECEIVED = /Wifi data received:\s*(\S+)/i;
+        const RE_WIFI_DATA_SENT = /Wifi data sent:\s*(\S+)/i;
+        const RE_BLUETOOTH_TOTAL = /Bluetooth total received:\s*([^,]+),\s*sent:\s*(\S+)/i;
+        const RE_BLUETOOTH_SCAN = /Bluetooth scan time:\s*([\ddhms .]+)/i;
+        const RE_BLUETOOTH_RX = /Bluetooth Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_BLUETOOTH_TX = /Bluetooth Tx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_BLUETOOTH_DRAIN = /Bluetooth Battery drain:\s*([\d.]+)\s*mAh/i;
+        const RE_CPU_LOAD = /Load:\s*([\d.]+)\s*\/\s*([\d.]+)\s*\/\s*([\d.]+)/i;
+        const RE_POWER_DRAIN = /Capacity:\s*[\d.]+,\s*Computed drain:\s*([\d.]+),\s*actual drain:\s*([\d.]+)/i;
+        const RE_POWER_COMPONENT = /^\s{4}([A-Za-z_][A-Za-z0-9_\-]*):\s*([\d.]+)(?:.*?\bduration:\s*(.+?))?\s*.*$/i;
+        const RE_UID_POWER = /^\s*UID\s+([^:]+):\s*([\d.]+)(?:\s+fg:\s*([\d.]+))?(?:.*?\s+bg:\s*([\d.]+))?(?:.*?\s+fgs:\s*([\d.]+))?/i;
+        const RE_KERNEL_WAKELOCK_LEADER = /^\s*Kernel Wake lock\s+(.+?):\s*(.+?)\s+\((\d+)\s+times\)/i;
+        const RE_PARTIAL_WAKELOCK_LEADER = /^\s*Wake lock\s+(.+?):\s*(.+?)\s+\((\d+)\s+times\)/i;
 
         function learnedCapacityNote(info) {
             const values = [info.lastLearnedCapacity, info.minLearnedCapacity, info.maxLearnedCapacity]
@@ -703,6 +736,7 @@
             document.getElementById('zip-file').addEventListener('change', handleFileSelect);
             document.getElementById('export-report-btn').addEventListener('click', saveReportAsTxt);
             document.getElementById('initial-capacity').addEventListener('input', handleCapacityInput);
+            document.getElementById('cancel-parse-btn').addEventListener('click', cancelActiveParse);
         });
 
         function handleFileSelect() {
@@ -823,13 +857,62 @@
             return lowerName.includes('bugreport') && lowerName.endsWith('.txt');
         }
 
+        // ── 解析进度与取消（两个网页共用同一份代码；取消会作废本次解析，已发出的读取结果会被丢弃）──
+        let activeParseAbort = null;
+        let activeParseToken = 0;
+        let parseInProgress = false;
+
+        function beginParseProgress() {
+            if (activeParseAbort) activeParseAbort.abort();
+            activeParseAbort = typeof AbortController === 'function' ? new AbortController() : null;
+            activeParseToken += 1;
+            parseInProgress = true;
+            const button = document.getElementById('cancel-parse-btn');
+            if (button) button.style.display = 'block';
+            return activeParseToken;
+        }
+
+        function endParseProgress(token) {
+            if (token !== activeParseToken) return;
+            activeParseAbort = null;
+            parseInProgress = false;
+            const button = document.getElementById('cancel-parse-btn');
+            if (button) button.style.display = 'none';
+        }
+
+        function entryReadOptions(filename) {
+            const label = String(filename || '').split('/').pop();
+            const options = { checkSignature: true };
+            if (activeParseAbort) options.signal = activeParseAbort.signal;
+            options.onprogress = (loaded, total) => {
+                if (!parseInProgress) return;
+                const read = (Number(loaded) || 0) / 1048576;
+                const size = Number(total) > 0 ? ` / ${(Number(total) / 1048576).toFixed(1)}` : '';
+                showStatus(`正在解析 ${label}（已读 ${read.toFixed(1)}${size} MB），可点击“取消解析”中止`);
+            };
+            return options;
+        }
+
+        function cancelActiveParse() {
+            if (!parseInProgress) return;
+            if (activeParseAbort) activeParseAbort.abort();
+            invalidateActiveParse();
+            endParseProgress(activeParseToken);
+            clearExportReport();
+            showStatus('已取消解析；可重新选择文件，或点击“计算”重新解析。');
+        }
+
+        function invalidateActiveParse() {
+            analysisRevision += 1;
+        }
+
         function isZipEntry(filename) {
             return (filename || '').toLowerCase().endsWith('.zip');
         }
 
         async function parseHealthTxtEntry(entry, infoTarget) {
             assertTextEntryWithinLimit(entry);
-            const content = await entry.getData(new zip.TextWriter(), { checkSignature: true });
+            const content = await entry.getData(new zip.TextWriter(), entryReadOptions(entry.filename));
             const designCapacityMatch = content.match(/batteryFullChargeDesignCapacityUah\s*[:=]\s*(\d+)/);
             const designCapacity = designCapacityMatch ? Number(designCapacityMatch[1]) / 1000 : null;
             if (Number.isFinite(designCapacity) && designCapacity > 0 && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
@@ -882,7 +965,7 @@
 
         async function parseBugreportTxtEntry(entry, infoTarget) {
             assertTextEntryWithinLimit(entry);
-            const content = await entry.getData(new zip.TextWriter(), { checkSignature: true });
+            const content = await entry.getData(new zip.TextWriter(), entryReadOptions(entry.filename));
             return enrichInfoFromBugreportText(content, infoTarget);
         }
 
@@ -910,6 +993,7 @@
             const infoTarget = autoExtractedInfo;
             const isCurrent = () => revision === analysisRevision && reportInputsMatch(reportInputs);
             clearExportReport();
+            const progressToken = beginParseProgress();
             let reader = null;
             let hasHealthFile = false;
             let hasBugreportFile = false;
@@ -947,7 +1031,7 @@
                         }
                         let innerZipBlob = null;
                         try {
-                            innerZipBlob = await entry.getData(new zip.BlobWriter('application/zip'), { checkSignature: true });
+                            innerZipBlob = await entry.getData(new zip.BlobWriter('application/zip'), entryReadOptions(entry.filename));
                             if (!isCurrent()) return;
                         } catch (innerZipError) {
                             parseIssueCount += 1;
@@ -1053,6 +1137,7 @@
                 if (reader) {
                     try { await reader.close(); } catch (closeError) { console.warn('关闭诊断包失败', closeError); }
                 }
+                endParseProgress(progressToken);
             }
         }
 
@@ -1193,31 +1278,30 @@
             };
         }
 
-        function parseBatteryStateLine(line, result) {
+        function parseBatteryStateLine(line, info) {
             const idx = line.indexOf(':');
             if (idx < 0) return;
             const key = line.slice(0, idx).trim();
             const value = line.slice(idx + 1).trim();
             if (!value) return;
-
             const boolValue = value === 'true' ? true : (value === 'false' ? false : null);
             const intValue = /^-?\d+$/.test(value) ? parseInt(value, 10) : null;
 
-            if (key === 'AC powered') result.acPowered = boolValue;
-            else if (key === 'USB powered') result.usbPowered = boolValue;
-            else if (key === 'Wireless powered') result.wirelessPowered = boolValue;
-            else if (key === 'Dock powered') result.dockPowered = boolValue;
-            else if (key === 'Max charging current' && intValue != null) result.maxChargingCurrentMa = Math.floor(intValue / 1000);
-            else if (key === 'Max charging voltage' && intValue != null) result.maxChargingVoltageMv = Math.floor(intValue / 1000);
-            else if (key === 'Charge counter' && intValue != null) result.chargeCounter = Math.floor(intValue / 1000);
-            else if (key === 'status' && intValue != null) result.statusCode = intValue;
-            else if (key === 'health' && intValue != null) result.healthCode = intValue;
-            else if (key === 'level' && intValue != null) result.batteryLevel = intValue;
-            else if (key === 'scale' && intValue != null) result.batteryScale = intValue;
-            else if (key === 'voltage' && intValue != null) result.voltageMv = intValue;
-            else if (key === 'temperature' && intValue != null) result.temperatureC = intValue / 10;
-            else if (key === 'technology') result.technology = value;
-            else if (key === 'Capacity level' && intValue != null) result.capacityLevel = intValue;
+            if (key === 'AC powered') info.acPowered = boolValue;
+            else if (key === 'USB powered') info.usbPowered = boolValue;
+            else if (key === 'Wireless powered') info.wirelessPowered = boolValue;
+            else if (key === 'Dock powered') info.dockPowered = boolValue;
+            else if (key === 'Max charging current' && intValue != null) info.maxChargingCurrentMa = Math.floor(intValue / 1000);
+            else if (key === 'Max charging voltage' && intValue != null) info.maxChargingVoltageMv = Math.floor(intValue / 1000);
+            else if (key === 'Charge counter' && intValue != null) info.chargeCounter = Math.floor(intValue / 1000);
+            else if (key === 'status' && intValue != null) info.statusCode = intValue;
+            else if (key === 'health' && intValue != null) info.healthCode = intValue;
+            else if (key === 'level' && intValue != null) info.batteryLevel = intValue;
+            else if (key === 'scale' && intValue != null) info.batteryScale = intValue;
+            else if (key === 'voltage' && intValue != null) info.voltageMv = intValue;
+            else if (key === 'temperature' && intValue != null) info.temperatureC = intValue / 10;
+            else if (key === 'technology') info.technology = value;
+            else if (key === 'Capacity level' && intValue != null) info.capacityLevel = intValue;
         }
 
         // 从统计信息中提取电池容量
@@ -1266,17 +1350,11 @@
 
         function getCurrentCapacityInfo(info) {
             if (Number.isFinite(info.minLearnedCapacity) && info.minLearnedCapacity > 0) {
-                return {
-                    value: info.minLearnedCapacity,
-                    source: 'batterystats 最小学习容量'
-                };
+                return { value: info.minLearnedCapacity, source: 'batterystats 最小学习容量' };
             }
             const scale = info.batteryScale == null ? 100 : info.batteryScale;
             if (Number.isFinite(info.chargeCounter) && info.chargeCounter > 0 && Number.isFinite(scale) && scale > 0 && Number.isFinite(info.batteryLevel) && info.batteryLevel >= 0.95 * scale && info.batteryLevel <= scale) {
-                return {
-                    value: info.chargeCounter,
-                    source: '满电状态 Charge counter 估算'
-                };
+                return { value: info.chargeCounter, source: '满电状态 Charge counter 估算' };
             }
             return { value: null, source: '未检测到' };
         }
@@ -1368,7 +1446,7 @@
             const capacity = getCurrentCapacityInfo(info);
             if (capacity.value != null) html += `<p>当前实际容量: ${capacity.value} mAh</p>`;
             html += buildBatterySnapshotHtml(info) + buildUsageDiagnosticsHtml(info, null);
-            if (info.statistics) html += `<pre>${escHtml(info.statistics)}</pre>`;
+            if (info.statistics) html += `<details><summary>原始统计数据（点击展开）</summary><pre>${escHtml(info.statistics)}</pre></details>`;
             if (info.parseIssueCount > 0) html += `<p>部分日志解析失败（${info.parseIssueCount} 处），报告仅包含已成功提取的数据。</p>`;
             return html + '</div>';
         }
@@ -1558,6 +1636,7 @@
             }
 
             infoTarget.parseIssueCount = 0;
+            const progressToken = beginParseProgress();
             let reader = null;
             try {
                 reader = new zip.ZipReader(new zip.BlobReader(file));
@@ -1585,7 +1664,7 @@
                         showStatus("正在解压内层文件...");
                         let innerZipBlob = null;
                         try {
-                            innerZipBlob = await entry.getData(new zip.BlobWriter('application/zip'), { checkSignature: true });
+                            innerZipBlob = await entry.getData(new zip.BlobWriter('application/zip'), entryReadOptions(entry.filename));
                         } catch (innerZipError) {
                             infoTarget.parseIssueCount += 1;
                             console.warn(`读取内层压缩包失败: ${entry.filename}`, innerZipError);
@@ -1649,6 +1728,7 @@
                 if (reader) {
                     try { await reader.close(); } catch (closeError) { console.warn('关闭诊断包失败', closeError); }
                 }
+                endParseProgress(progressToken);
                 if (isCurrent()) document.getElementById('status').style.display = 'none';
             }
         }
@@ -1702,33 +1782,33 @@
 
         function parseUsageStats(text, info) {
             const durationFields = [
-                [/Time on battery:\s*([\ddhms .]+)\s*\(/i, 'timeOnBatterySeconds'],
-                [/Time on battery screen off:\s*([\ddhms .]+)\s*\(/i, 'screenOffSeconds'],
-                [/Screen on:\s*([\ddhms .]+)\s*\(/i, 'screenOnSeconds'],
-                [/Total full wakelock time:\s*([\ddhms .]+)/i, 'fullWakelockSeconds'],
-                [/Total partial wakelock time:\s*([\ddhms .]+)/i, 'partialWakelockSeconds'],
-                [/Total WiFi Multicast wakelock time:\s*([\ddhms .]+)/i, 'wifiMulticastWakelockSeconds']
+                [RE_TIME_ON_BATTERY, 'timeOnBatterySeconds'],
+                [RE_SCREEN_OFF_TIME, 'screenOffSeconds'],
+                [RE_SCREEN_ON_TIME, 'screenOnSeconds'],
+                [RE_FULL_WAKELOCK, 'fullWakelockSeconds'],
+                [RE_PARTIAL_WAKELOCK, 'partialWakelockSeconds'],
+                [RE_WIFI_MULTICAST_TIME, 'wifiMulticastWakelockSeconds']
             ];
             for (const [pattern, key] of durationFields) {
-                const match = text.match(pattern);
+                const match = pattern.exec(text);
                 if (match) info[key] = parseDurationSeconds(match[1]);
             }
 
             const valueFields = [
-                [/^\s*Discharge:\s*([\d.]+)\s*mAh/im, 'totalDischargeMah'],
-                [/Screen off discharge:\s*([\d.]+)\s*mAh/i, 'screenOffDischargeMah'],
-                [/Screen doze discharge:\s*([\d.]+)\s*mAh/i, 'screenDozeDischargeMah'],
-                [/Screen on discharge:\s*([\d.]+)\s*mAh/i, 'screenOnDischargeMah'],
-                [/Device deep doze discharge:\s*([\d.]+)\s*mAh/i, 'deviceDeepDozeDischargeMah']
+                [RE_TOTAL_DISCHARGE, 'totalDischargeMah'],
+                [RE_SCREEN_OFF_DISCHARGE, 'screenOffDischargeMah'],
+                [RE_SCREEN_DOZE_DISCHARGE, 'screenDozeDischargeMah'],
+                [RE_SCREEN_ON_DISCHARGE, 'screenOnDischargeMah'],
+                [RE_DEEP_DOZE_DISCHARGE, 'deviceDeepDozeDischargeMah']
             ];
             for (const [pattern, key] of valueFields) {
-                const match = text.match(pattern);
+                const match = pattern.exec(text);
                 if (match) info[key] = parseFloat(match[1]);
             }
 
-            let match = text.match(/Total WiFi Multicast wakelock Count:\s*(\d+)/i);
+            let match = RE_WIFI_MULTICAST_COUNT.exec(text);
             if (match) info.wifiMulticastWakelockCount = parseInt(match[1], 10);
-            match = text.match(/Connectivity changes:\s*(\d+)/i);
+            match = RE_CONNECTIVITY_CHANGES.exec(text);
             if (match) info.connectivityChanges = parseInt(match[1], 10);
 
             parseScreenBrightnessStats(text, info);
@@ -1746,7 +1826,7 @@
                 if (!inSection) continue;
                 if (!line) break;
 
-                const match = raw.match(/^\s*(dark|dim|medium|light|bright)\s+(.+?)\s+\(([\d.]+)%\)/i);
+                const match = RE_SCREEN_BRIGHTNESS_ITEM.exec(raw);
                 if (!match) {
                     if (!/^\s/.test(raw) || line.endsWith(':')) break;
                     continue;
@@ -1764,40 +1844,40 @@
 
         function parseConnectivityPowerStats(text, info) {
             const durationFields = [
-                [/Cellular kernel active time:\s*([\ddhms .]+)(?:\s*\(|$)/i, 'cellularKernelActiveSeconds'],
-                [/Cellular Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i, 'cellularRxSeconds'],
-                [/WiFi Scan time:\s*([\ddhms .]+)(?:\s*\(|$)/i, 'wifiScanSeconds']
+                [RE_CELLULAR_KERNEL_ACTIVE, 'cellularKernelActiveSeconds'],
+                [RE_CELLULAR_RX_TIME, 'cellularRxSeconds'],
+                [RE_WIFI_SCAN_TIME, 'wifiScanSeconds']
             ];
             for (const [pattern, key] of durationFields) {
-                const match = text.match(pattern);
+                const match = pattern.exec(text);
                 if (match) info[key] = parseDurationSeconds(match[1]);
             }
 
             const sizeFields = [
-                [/Cellular data received:\s*(\S+)/i, 'cellularReceivedBytes'],
-                [/Cellular data sent:\s*(\S+)/i, 'cellularSentBytes'],
-                [/Wifi data received:\s*(\S+)/i, 'wifiReceivedBytes'],
-                [/Wifi data sent:\s*(\S+)/i, 'wifiSentBytes']
+                [RE_CELLULAR_DATA_RECEIVED, 'cellularReceivedBytes'],
+                [RE_CELLULAR_DATA_SENT, 'cellularSentBytes'],
+                [RE_WIFI_DATA_RECEIVED, 'wifiReceivedBytes'],
+                [RE_WIFI_DATA_SENT, 'wifiSentBytes']
             ];
             for (const [pattern, key] of sizeFields) {
-                const match = text.match(pattern);
+                const match = pattern.exec(text);
                 if (match) info[key] = parseDataSizeBytes(match[1]);
             }
         }
 
         function parseBluetoothStats(text, info) {
-            let match = text.match(/Bluetooth total received:\s*([^,]+),\s*sent:\s*(\S+)/i);
+            let match = RE_BLUETOOTH_TOTAL.exec(text);
             if (match) {
                 info.bluetoothReceivedBytes = parseDataSizeBytes(match[1]);
                 info.bluetoothSentBytes = parseDataSizeBytes(match[2]);
             }
-            match = text.match(/Bluetooth scan time:\s*([\ddhms .]+)/i);
+            match = RE_BLUETOOTH_SCAN.exec(text);
             if (match) info.bluetoothScanSeconds = parseDurationSeconds(match[1]);
-            match = text.match(/Bluetooth Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i);
+            match = RE_BLUETOOTH_RX.exec(text);
             if (match) info.bluetoothRxSeconds = parseDurationSeconds(match[1]);
-            match = text.match(/Bluetooth Tx time:\s*([\ddhms .]+)(?:\s*\(|$)/i);
+            match = RE_BLUETOOTH_TX.exec(text);
             if (match) info.bluetoothTxSeconds = parseDurationSeconds(match[1]);
-            match = text.match(/Bluetooth Battery drain:\s*([\d.]+)\s*mAh/i);
+            match = RE_BLUETOOTH_DRAIN.exec(text);
             if (match) info.bluetoothDrainMah = parseFloat(match[1]);
 
             let inDevices = false;
@@ -1823,7 +1903,7 @@
         }
 
         function parseCpuSnapshot(text, info) {
-            const loadMatch = text.match(/Load:\s*([\d.]+)\s*\/\s*([\d.]+)\s*\/\s*([\d.]+)/i);
+            const loadMatch = RE_CPU_LOAD.exec(text);
             if (loadMatch) {
                 info.cpuLoad1m = parseFloat(loadMatch[1]);
                 info.cpuLoad5m = parseFloat(loadMatch[2]);
@@ -1871,7 +1951,7 @@
                 }
                 if (!line) { inPowerSection = false; inGlobal = false; }
                 if (!inPowerSection) continue;
-                const drainMatch = raw.match(/Capacity:\s*[\d.]+,\s*Computed drain:\s*([\d.]+),\s*actual drain:\s*([\d.]+)/i);
+                const drainMatch = RE_POWER_DRAIN.exec(raw);
                 if (drainMatch) {
                     info.computedDrainMah = parseFloat(drainMatch[1]);
                     info.actualDrainMah = parseFloat(drainMatch[2]);
@@ -1881,7 +1961,7 @@
                     continue;
                 }
                 if (inGlobal) {
-                    const componentMatch = raw.match(/^\s{4}([A-Za-z_][A-Za-z0-9_\-]*):\s*([\d.]+)(?:.*?\bduration:\s*(.+?))?\s*.*$/i);
+                    const componentMatch = RE_POWER_COMPONENT.exec(raw);
                     if (componentMatch) {
                         components.push({
                             name: componentMatch[1],
@@ -1895,7 +1975,7 @@
                     }
                 }
 
-                const uidMatch = raw.match(/^\s*UID\s+([^:]+):\s*([\d.]+)(?:\s+fg:\s*([\d.]+))?(?:.*?\s+bg:\s*([\d.]+))?(?:.*?\s+fgs:\s*([\d.]+))?/i);
+                const uidMatch = RE_UID_POWER.exec(raw);
                 if (uidMatch) {
                     uids.push({
                         uid: uidMatch[1].trim(),
@@ -1941,6 +2021,7 @@
             const kernel = [];
             const partial = [];
             let mode = null;
+
             for (const raw of text.split('\n')) {
                 const line = raw.trim();
                 if (line === 'All kernel wake locks:') {
@@ -1957,7 +2038,7 @@
                 }
 
                 if (mode === 'kernel') {
-                    const match = raw.match(/^\s*Kernel Wake lock\s+(.+?):\s*(.+?)\s+\((\d+)\s+times\)/i);
+                    const match = RE_KERNEL_WAKELOCK_LEADER.exec(raw);
                     if (match) {
                         kernel.push({
                             name: match[1].trim(),
@@ -1966,7 +2047,7 @@
                         });
                     }
                 } else if (mode === 'partial') {
-                    const match = raw.match(/^\s*Wake lock\s+(.+?):\s*(.+?)\s+\((\d+)\s+times\)/i);
+                    const match = RE_PARTIAL_WAKELOCK_LEADER.exec(raw);
                     if (match) {
                         partial.push({
                             name: match[1].trim(),
@@ -1994,7 +2075,7 @@
         function buildUsageDiagnostics(info, healthPct) {
             const lines = evidenceDiagnosticLines(info, healthPct);
 
-            const screenOnShare = percent(autoNumber(info.screenOnDischargeMah), autoNumber(info.totalDischargeMah));
+            const screenOnShare = percent(info.screenOnDischargeMah, info.totalDischargeMah);
             if (screenOnShare != null) {
                 const drain = drainRate(info.screenOnDischargeMah, info.screenOnSeconds);
                 const drainText = drain != null ? `，亮屏平均耗电约 ${drain.toFixed(1)} mA` : '';
@@ -2129,10 +2210,6 @@
 
             if (!hasUsageStats(info) || !lines.length) lines.push('本次 bugreport 未提供足够的结构化耗电统计，只能显示容量快照。');
             return lines;
-        }
-
-        function autoNumber(value) {
-            return value == null ? null : Number(value);
         }
 
         function percent(value, total) {
@@ -2274,35 +2351,15 @@
         }
 
         function getBatteryStatusText(code) {
-            return {
-                1: '未知',
-                2: '充电中',
-                3: '放电中',
-                4: '未充电',
-                5: '已充满'
-            }[code] || `未知状态(${code})`;
+            return { 1: '未知', 2: '充电中', 3: '放电中', 4: '未充电', 5: '已充满' }[code] || `未知状态(${code})`;
         }
 
         function getBatteryHealthText(code) {
-            return {
-                1: '未知',
-                2: '良好',
-                3: '过热',
-                4: '电池故障',
-                5: '过压',
-                6: '未知错误',
-                7: '过冷'
-            }[code] || `未知健康码(${code})`;
+            return { 1: '未知', 2: '良好', 3: '过热', 4: '电池故障', 5: '过压', 6: '未知错误', 7: '过冷' }[code] || `未知健康码(${code})`;
         }
 
         function getCapacityLevelText(code) {
-            return {
-                1: '严重低电',
-                2: '低电',
-                3: '正常',
-                4: '高电',
-                5: '满电'
-            }[code] || `未知等级(${code})`;
+            return { 1: '严重低电', 2: '低电', 3: '正常', 4: '高电', 5: '满电' }[code] || `未知等级(${code})`;
         }
 
         function getTemperatureText(value) {
@@ -2331,11 +2388,9 @@
             return div.innerHTML;
         }
 
-        function getRatingColor(percentage) {
-            for (const row of RATING_TABLE) {
-                if (percentage >= row[0] && percentage <= row[1]) {
-                    return row[3];
-                }
+        function getRatingColor(pct) {
+            for (const [lo, hi, , color] of RATING_TABLE) {
+                if (pct >= lo && pct <= hi) return color;
             }
             return '#718096';
         }

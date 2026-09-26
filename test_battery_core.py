@@ -922,6 +922,25 @@ class EvidenceAndChargeLoggerTests(unittest.TestCase):
                          (5000, "手动输入", False))
         self.assertFalse(any("已降级使用" in item for item in info.parse_warnings))
 
+    def test_health_node_uses_last_snapshot_and_reports_changes(self):
+        health = "\n".join([
+            "batteryFullChargeDesignCapacityUah: 5000000", "batteryCycleCount: 120", "batteryFullChargeUah: 4600000",
+            "--- later snapshot ---",
+            "batteryFullChargeDesignCapacityUah: 5000000", "batteryCycleCount: 123", "batteryFullChargeUah: 4550000",
+        ])
+        info = self.extract({"android.hardware.health-service.txt": health,
+                             "bugreport-synth.txt": "Statistics since last charge:\n  Min learned battery capacity: 4500 mAh\n\n"})
+        self.assertEqual((info.design_capacity, info.cycle_count, info.full_capacity), (5000, 123, 4550))
+        warnings = "\n".join(info.parse_warnings)
+        self.assertIn("batteryCycleCount 出现多个不同值（首次 120、末次 123）", warnings)
+        self.assertNotIn("batteryFullChargeDesignCapacityUah 出现多个不同值", warnings)
+
+    def test_parse_stats_include_peak_memory_when_available(self):
+        info = self.extract({"bugreport-synth.txt": _WEAK_EVIDENCE_BUGREPORT})
+        if battery_core._peak_memory_bytes() is None:
+            self.skipTest("platform does not expose peak memory")
+        self.assertGreater(info.parse_stats["peak_memory_mb"], 0)
+
     def test_rating_table_matches_both_web_pages(self):
         for page in (ROOT / "index.html", BAT_DIR / "index.html"):
             with self.subTest(page=page.name):

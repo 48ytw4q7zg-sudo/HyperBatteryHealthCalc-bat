@@ -243,6 +243,25 @@ class ReportExportTests(unittest.TestCase):
         self.assertNotIn('first.zip', redacted)
         self.assertIn('文件2', redacted)
 
+    def test_raw_statistics_are_collapsed_in_view_but_exported(self):
+        app = self.make_app()
+        app._show_result = battery_gui.BatteryHealthApp._show_result.__get__(app)
+        app._render_result = Mock()
+        app.show_raw = Mock()
+        app.show_raw.get.return_value = False
+        info = BatteryInfo(design_capacity=5000, min_learned_capacity=4500,
+                           statistics='Statistics since last charge:\n  RAW-STATISTICS-LINE')
+        app.extractor.extract.return_value = info
+        self.run_analysis(app)
+        shown = app._render_result.call_args.args[0]
+        self.assertNotIn('RAW-STATISTICS-LINE', shown)
+        self.assertIn('已折叠', shown)
+        self.assertIn('RAW-STATISTICS-LINE', app._report_text)
+        app.show_raw.get.return_value = True
+        app._toggle_raw_statistics()
+        self.assertIn('RAW-STATISTICS-LINE', app._render_result.call_args.args[0])
+        self.assertTrue(app._export_is_current(), 'toggling the view must keep the analysed export')
+
     def test_close_cancels_running_analysis_and_waits(self):
         app = self.make_app()
         app._cancel_event = threading.Event()

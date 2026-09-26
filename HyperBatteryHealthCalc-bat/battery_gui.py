@@ -76,6 +76,9 @@ class BatteryHealthApp:
         self.file_path_index: dict[str, Path] = {}
         self.recursive_scan = tk.BooleanVar(value=False)
         self.redact_export = tk.BooleanVar(value=False)
+        # 结果区默认折叠原始统计段（先结论后原文）；保存的报告始终是全文。
+        self.show_raw = tk.BooleanVar(value=False)
+        self._display_texts: Optional[tuple[str, str, bool]] = None
 
         self._build_ui()
         self._refresh_file_list()
@@ -141,6 +144,12 @@ class BatteryHealthApp:
                                         textvariable=self.capacity_var,
                                         font=('Consolas', 10))
         self.capacity_entry.pack(side='left')
+        ttk.Checkbutton(
+            self.capacity_frame,
+            text='显示原始统计数据',
+            variable=self.show_raw,
+            command=self._toggle_raw_statistics,
+        ).pack(side='left', padx=(12, 0))
 
         btn_frame = ttk.Frame(main)
         btn_frame.pack(fill='x', pady=(0, 10))
@@ -387,7 +396,7 @@ class BatteryHealthApp:
             report = build(info, fingerprint)
             redacted_info = redacted_copy(info)
             hidden_fingerprint = redacted_fingerprint(fingerprint)
-            self._show_result(report, error=not complete)
+            self._show_report_text(build(info, fingerprint, include_raw=False), report, error=not complete)
             self._set_export_report(
                 report, zip_path, (file_name, capacity_text),
                 redacted_text=build(redacted_info, hidden_fingerprint),
@@ -528,7 +537,7 @@ class BatteryHealthApp:
         self._worker.start()
         self.root.after(100, collect_batch)
 
-    def _build_report(self, info: BatteryInfo, fingerprint: Optional[dict] = None) -> str:
+    def _build_report(self, info: BatteryInfo, fingerprint: Optional[dict] = None, include_raw: bool = True) -> str:
         lines = []
         sep = '=' * 54
         lines.append(sep)
@@ -637,10 +646,13 @@ class BatteryHealthApp:
 
         if info.statistics:
             lines.append('')
-            lines.append('  --- 原始电池统计数据 ---')
-            lines.append('-' * 54)
-            lines.append(info.statistics)
-            lines.append('-' * 54)
+            if include_raw:
+                lines.append('  --- 原始电池统计数据 ---')
+                lines.append('-' * 54)
+                lines.append(info.statistics)
+                lines.append('-' * 54)
+            else:
+                lines.append('  --- 原始电池统计数据（已折叠：勾选“显示原始统计数据”查看；保存的报告包含全文）---')
 
         for warning in info.parse_warnings:
             lines.append(f'  [注意] {warning}')
@@ -648,8 +660,8 @@ class BatteryHealthApp:
         lines.append(sep)
         return '\n'.join(lines)
 
-    def _build_error_report(self, info: BatteryInfo, fingerprint: Optional[dict] = None) -> str:
-        lines = [self._build_report(info, fingerprint), '', '  部分信息已提取（以下说明缺失的数据）']
+    def _build_error_report(self, info: BatteryInfo, fingerprint: Optional[dict] = None, include_raw: bool = True) -> str:
+        lines = [self._build_report(info, fingerprint, include_raw), '', '  部分信息已提取（以下说明缺失的数据）']
         if not info.has_design_capacity:
             lines.append('  [注意] 未检测到设计容量，请在上方手动输入后重试。')
         if info.current_capacity is None:
@@ -663,13 +675,31 @@ class BatteryHealthApp:
         return '\n'.join(lines)
 
     def _show_result(self, text: str, error: bool = False) -> None:
+        self._display_texts = None
         self._invalidate_export()
+        self._render_result(text, error)
+
+    def _render_result(self, text: str, error: bool) -> None:
         self.result_text.configure(state='normal')
         self.result_text.delete('1.0', 'end')
         self.result_text.insert('1.0', text)
         if not error:
             self._highlight_result()
         self.result_text.configure(state='disabled')
+
+    def _show_report_text(self, collapsed: str, full: str, *, error: bool) -> None:
+        """单份报告：按“显示原始统计数据”开关选择折叠版或全文显示。"""
+        show_raw = getattr(self, 'show_raw', None)
+        self._show_result(full if show_raw is not None and show_raw.get() else collapsed, error=error)
+        self._display_texts = (collapsed, full, error)
+
+    def _toggle_raw_statistics(self) -> None:
+        # 只切换显示，不改变已分析的结果和导出内容。
+        texts = getattr(self, '_display_texts', None)
+        if not texts:
+            return
+        collapsed, full, error = texts
+        self._render_result(full if self.show_raw.get() else collapsed, error)
 
     def _highlight_result(self) -> None:
         info = self.current_info
@@ -698,6 +728,7 @@ class BatteryHealthApp:
 
     def _clear_result(self) -> None:
         self._invalidate_export()
+        self._display_texts = None
         self.current_info = None
         self.result_text.configure(state='normal')
         self.result_text.delete('1.0', 'end')
