@@ -924,6 +924,7 @@ class EvidenceAndChargeLoggerTests(unittest.TestCase):
 
     def test_health_node_uses_last_snapshot_and_reports_changes(self):
         health = "\n".join([
+            "batteryFullChargeDesignCapacityUah: 0",
             "batteryFullChargeDesignCapacityUah: 5000000", "batteryCycleCount: 120", "batteryFullChargeUah: 4600000",
             "--- later snapshot ---",
             "batteryFullChargeDesignCapacityUah: 5000000", "batteryCycleCount: 123", "batteryFullChargeUah: 4550000",

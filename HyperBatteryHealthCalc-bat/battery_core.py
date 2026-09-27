@@ -1529,6 +1529,7 @@ class BatteryExtractor:
             info.full_capacity = seen['full'][-1] / 1000
 
         labels = {'design': 'batteryFullChargeDesignCapacityUah', 'cycle': 'batteryCycleCount', 'full': 'batteryFullCharge'}
+        seen['design'] = designs  # 0 是未填写的占位值，不算“出现多个不同值”
         for name, values in seen.items():
             if len(set(values)) > 1:
                 info.parse_warnings.append(
