@@ -899,6 +899,9 @@
             invalidateActiveParse();
             endParseProgress(activeParseToken);
             clearExportReport();
+            // 首次自动解析被取消时这两个控件仍是隐藏的；恢复显示，提示里的“计算”才点得到
+            document.getElementById('manual-input-container').style.display = 'block';
+            document.getElementById('calculate-btn').style.display = 'block';
             showStatus('已取消解析；可重新选择文件，或点击“计算”重新解析。');
         }
 
@@ -912,21 +915,30 @@
 
         async function parseHealthTxtEntry(entry, infoTarget) {
             assertTextEntryWithinLimit(entry);
-            const content = await entry.getData(new zip.TextWriter(), entryReadOptions(entry.filename));
-            const designCapacityMatch = content.match(/batteryFullChargeDesignCapacityUah\s*[:=]\s*(\d+)/);
-            const designCapacity = designCapacityMatch ? Number(designCapacityMatch[1]) / 1000 : null;
-            if (Number.isFinite(designCapacity) && designCapacity > 0 && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
-                infoTarget.designCapacity = designCapacity;
+            const txt = await entry.getData(new zip.TextWriter(), entryReadOptions(entry.filename));
+            applyHealthText(txt, infoTarget);
+        }
+
+        // 与 Python 核心 _parse_health_stream 一致：同一 health 文件里字段出现多次时取最后一次（最新快照），
+        // 设计容量忽略 0 占位；循环次数和满充容量只在尚未取得时采用，多个 health 文件时保留先解析的一份。
+        function applyHealthText(txt, infoTarget) {
+            const lastValue = (pattern, positiveOnly) => {
+                let value = null;
+                for (const match of String(txt || '').matchAll(pattern)) {
+                    const number = Number(match[1]);
+                    if (Number.isFinite(number) && (!positiveOnly || number > 0)) value = number;
+                }
+                return value;
+            };
+            const design = lastValue(/batteryFullChargeDesignCapacityUah\s*[:=]\s*(\d+)/g, true);
+            if (design !== null && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
+                infoTarget.designCapacity = design / 1000;
                 infoTarget.designCapacitySource = 'hardware health 设计容量';
             }
-            const cycleCountMatch = content.match(/batteryCycleCount\s*[:=]\s*(\d+)/);
-            if (cycleCountMatch) {
-                infoTarget.cycleCount = parseInt(cycleCountMatch[1]);
-            }
-            const fullCapacityMatch = content.match(/batteryFullCharge(?:Uah)?\s*[:=]\s*(\d+)/);
-            if (fullCapacityMatch) {
-                infoTarget.fullCapacity = parseInt(fullCapacityMatch[1]) / 1000; // 转换为 mAh
-            }
+            const cycle = lastValue(/batteryCycleCount\s*[:=]\s*(\d+)/g, false);
+            if (cycle !== null && infoTarget.cycleCount == null) infoTarget.cycleCount = cycle;
+            const full = lastValue(/batteryFullCharge(?:Uah)?\s*[:=]\s*(\d+)/g, false);
+            if (full !== null && infoTarget.fullCapacity == null) infoTarget.fullCapacity = full / 1000; // μAh → mAh
         }
 
         function enrichInfoFromBugreportText(content, infoTarget) {
@@ -947,7 +959,8 @@
             parseConnectivityPowerStats(content, infoTarget);
             parseBluetoothStats(content, infoTarget);
             parseCpuSnapshot(content, infoTarget);
-            if (extractedData.reportTime) {
+            // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 同时提供时间，其余文件只补空缺
+            if (extractedData.reportTime && (extractedData.statistics || !infoTarget.reportTime)) {
                 infoTarget.reportTime = extractedData.reportTime;
             }
             if (extractedData.statistics) {

@@ -745,33 +745,55 @@ async function runProgressAndDriftRegressions() {
         const pending = choose(page, {name: 'slow.zip', size: 1, entries: [control.entry]});
         await waitForRead(control);
         assert.equal(page.element('cancel-parse-btn').style.display, 'block', `${name}: cancel must be offered while reading`);
+        assert.equal(page.element('calculate-btn').style.display, 'none', `${name}: the first automatic parse hides 计算`);
         page.context.entryReadOptions('dump/bugreport-x.txt').onprogress(1048576, 2097152);
         assert.match(page.element('status').textContent, /正在解析 bugreport-x\.txt（已读 1\.0 \/ 2\.0 MB）/, name);
         page.element('cancel-parse-btn').click();
         assert.match(page.element('status').textContent, /已取消解析/, name);
         assert.equal(page.element('cancel-parse-btn').style.display, 'none', name);
+        assert.equal(page.element('calculate-btn').style.display, 'block', `${name}: cancel must offer 计算 again`);
+        assert.equal(page.element('manual-input-container').style.display, 'block', name);
         control.resolve('[ro.product.model]: [Late Device]\n' + stats(5000));
         await pending;
         assert.doesNotMatch(page.element('result').innerHTML, /Late Device/, `${name}: a cancelled parse must not render`);
         assert.equal(page.context.entryReadOptions('x.txt').checkSignature, true, name);
-        assertions += 6;
+        // health 节点与 Python 核心同一规则：文件内取最后一次（设计容量忽略 0），循环次数/满充容量跨文件保留先解析的
+        const health = {designCapacity: null, designCapacitySource: null, cycleCount: null, fullCapacity: null};
+        page.context.applyHealthText('batteryFullChargeDesignCapacityUah: 4800000\nbatteryCycleCount: 10\nbatteryFullCharge: 4100000\n'
+            + 'batteryFullChargeDesignCapacityUah: 5000000\nbatteryCycleCount: 12\nbatteryFullChargeUah: 3900000\n'
+            + 'batteryFullChargeDesignCapacityUah: 0\n', health);
+        assert.deepEqual([health.designCapacity, health.cycleCount, health.fullCapacity], [5000, 12, 3900], name);
+        page.context.applyHealthText('batteryFullChargeDesignCapacityUah: 5200000\nbatteryCycleCount: 99\nbatteryFullCharge: 1000000\n', health);
+        assert.deepEqual([health.designCapacity, health.cycleCount, health.fullCapacity], [5000, 12, 3900], `${name}: first health file keeps its values`);
+        // 诊断时间跟随统计段（与 Python 核心一致）：带统计段的后一份覆盖时间，不带统计段的只补空缺
+        const parseText = page.context.enrichInfoFromBugreportText || page.context.parseBugreportText;
+        const timed = {reportTime: null, statistics: null};
+        const dump = (time, capacity) => `== dumpstate: ${time}\n`
+            + (capacity ? `Statistics since last charge:\n  Estimated battery capacity: ${capacity} mAh\n\n` : '');
+        parseText(dump('2026-09-01 08:00:00', 4500), timed);
+        parseText(dump('2026-09-20 09:00:00', 4600), timed);
+        parseText(dump('2026-09-30 10:00:00'), timed);
+        assert.equal(timed.reportTime, '2026-09-20 09:00:00', `${name}: report time follows the statistics source`);
+        assertions += 12;
     }
-    // 两个网页同名函数必须逐字一致，只放行各自的界面函数；防止一页修了另一页漏改。
+    // 两个网页同名函数（含 async）必须逐字一致，只放行各自的界面函数；防止一页修了另一页漏改。
+    // parseBugreportTxtEntry 是两页各自 bugreport 流水线的入口（根目录页把提取结果返回给 processZipFile，便携页直接写入 info）。
     const normalized = pages.map(page => fs.readFileSync(path.join(__dirname, page), 'utf8').replace(/\r\n/g, '\n'));
     const source = (html, name) => {
-        const start = html.indexOf(`\n        function ${name}(`);
-        if (start < 0) return null;
-        const end = html.indexOf('\n        }\n', start + 1);
-        return end < 0 ? null : html.slice(start, end + 10);
+        const match = new RegExp(`\\n        (?:async )?function ${name}\\(`).exec(html);
+        if (!match) return null;
+        const end = html.indexOf('\n        }\n', match.index + 1);
+        return end < 0 ? null : html.slice(match.index, end + 10);
     };
     const allowedDifferences = new Set(['handleFileSelect', 'invalidateActiveParse', 'setExportReport', 'showResult',
-        'showError', 'showStatus', 'toggleOriginalText']);
-    const names = [...new Set([...normalized[0].matchAll(/\n        function (\w+)\(/g)].map(match => match[1]))];
+        'showError', 'showStatus', 'toggleOriginalText', 'parseBugreportTxtEntry']);
+    const names = [...new Set([...normalized[0].matchAll(/\n        (?:async )?function (\w+)\(/g)].map(match => match[1]))];
     const shared = names.filter(name => source(normalized[1], name) !== null && !allowedDifferences.has(name));
     const drifted = shared.filter(name => source(normalized[0], name) !== source(normalized[1], name));
     assert.deepEqual(drifted, [], `shared web functions drifted between pages: ${drifted.join(', ')}`);
     assert.ok(shared.length >= 60, 'the drift gate must keep covering the shared analysis logic');
-    assertions += 2;
+    assert.ok(shared.includes('parseHealthTxtEntry') && shared.includes('applyHealthText'), 'the drift gate must compare async functions too');
+    assertions += 3;
     console.log(`PASS: ${assertions} progress/cancel and drift assertions (${shared.length} functions identical in both pages)`);
 }
 

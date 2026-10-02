@@ -662,9 +662,6 @@
         };
 
         // 预编译正则
-        const RE_DESIGN = /batteryFullChargeDesignCapacityUah\s*[:=]\s*(\d+)/;
-        const RE_CYCLE = /batteryCycleCount\s*[:=]\s*(\d+)/;
-        const RE_FULL = /batteryFullCharge(?:Uah)?\s*[:=]\s*(\d+)/;
         const RE_MARKET = /\[ro\.product\.marketname\]:\s*\[([^\]]+)\]/;
         const RE_MODEL = /\[ro\.product\.model\]:\s*\[([^\]]+)\]/;
         const RE_DUMPSTATE = /== dumpstate:\s*(.+)/;
@@ -791,6 +788,9 @@
             invalidateActiveParse();
             endParseProgress(activeParseToken);
             clearExportReport();
+            // 首次自动解析被取消时这两个控件仍是隐藏的；恢复显示，提示里的“计算”才点得到
+            document.getElementById('manual-input-container').style.display = 'block';
+            document.getElementById('calculate-btn').style.display = 'block';
             showStatus('已取消解析；可重新选择文件，或点击“计算”重新解析。');
         }
 
@@ -805,16 +805,29 @@
         async function parseHealthTxtEntry(entry, infoTarget) {
             assertTextEntryWithinLimit(entry);
             const txt = await entry.getData(new zip.TextWriter(), entryReadOptions(entry.filename));
-            const designMatch = RE_DESIGN.exec(txt);
-            const designCapacity = designMatch ? Number(designMatch[1]) / 1000 : null;
-            if (Number.isFinite(designCapacity) && designCapacity > 0 && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
-                infoTarget.designCapacity = designCapacity;
+            applyHealthText(txt, infoTarget);
+        }
+
+        // 与 Python 核心 _parse_health_stream 一致：同一 health 文件里字段出现多次时取最后一次（最新快照），
+        // 设计容量忽略 0 占位；循环次数和满充容量只在尚未取得时采用，多个 health 文件时保留先解析的一份。
+        function applyHealthText(txt, infoTarget) {
+            const lastValue = (pattern, positiveOnly) => {
+                let value = null;
+                for (const match of String(txt || '').matchAll(pattern)) {
+                    const number = Number(match[1]);
+                    if (Number.isFinite(number) && (!positiveOnly || number > 0)) value = number;
+                }
+                return value;
+            };
+            const design = lastValue(/batteryFullChargeDesignCapacityUah\s*[:=]\s*(\d+)/g, true);
+            if (design !== null && (!(infoTarget.designCapacity > 0) || infoTarget.designCapacitySource !== 'hardware health 设计容量')) {
+                infoTarget.designCapacity = design / 1000;
                 infoTarget.designCapacitySource = 'hardware health 设计容量';
             }
-            const cycleMatch = RE_CYCLE.exec(txt);
-            if (cycleMatch) infoTarget.cycleCount = parseInt(cycleMatch[1]);
-            const fullMatch = RE_FULL.exec(txt);
-            if (fullMatch) infoTarget.fullCapacity = parseInt(fullMatch[1]) / 1000;
+            const cycle = lastValue(/batteryCycleCount\s*[:=]\s*(\d+)/g, false);
+            if (cycle !== null && infoTarget.cycleCount == null) infoTarget.cycleCount = cycle;
+            const full = lastValue(/batteryFullCharge(?:Uah)?\s*[:=]\s*(\d+)/g, false);
+            if (full !== null && infoTarget.fullCapacity == null) infoTarget.fullCapacity = full / 1000; // μAh → mAh
         }
 
         async function parseBugreportTxtEntry(entry, infoTarget) {
@@ -1177,6 +1190,8 @@
             let inBatteryState = false;
             let statsLines = [];
             let foundDevice = false;
+            let fileReportTime = null;
+            let sawStats = false;
 
             for (const raw of lines) {
                 const line = raw.trim();
@@ -1188,9 +1203,9 @@
                     if (m) { info.deviceName = m[1]; foundDevice = true; continue; }
                 }
 
-                if (!info.reportTime) {
+                if (!fileReportTime) {
                     const m = RE_DUMPSTATE.exec(line);
-                    if (m) info.reportTime = m[1];
+                    if (m) fileReportTime = m[1];
                 }
 
                 if (line === 'Current Battery Service state:') {
@@ -1215,6 +1230,7 @@
                         info.statistics = statsLines.join('\n');
                         parseStatsText(info.statistics, info);
                         statsLines = [];
+                        sawStats = true;
                     } else {
                         statsLines.push(line);
                     }
@@ -1224,7 +1240,10 @@
             if (inStats && statsLines.length) {
                 info.statistics = statsLines.join('\n');
                 parseStatsText(info.statistics, info);
+                sawStats = true;
             }
+            // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 同时提供时间，其余文件只补空缺
+            if (fileReportTime && (sawStats || !info.reportTime)) info.reportTime = fileReportTime;
             parsePowerUseStats(text, info);
             parseWakelockLeaders(text, info);
             parseConnectivityPowerStats(text, info);

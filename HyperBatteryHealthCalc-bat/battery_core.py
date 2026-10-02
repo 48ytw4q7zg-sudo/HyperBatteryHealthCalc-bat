@@ -184,6 +184,8 @@ class BatteryInfo:
     top_cpu_processes: list[CpuProcessUsage] = field(default_factory=list)
     screen_brightnesses: list[ScreenBrightnessBucket] = field(default_factory=list)
     uid_packages: dict[str, str] = field(default_factory=dict)
+    # 仅脱敏副本使用：原包名像游戏的别名（应用#N），让脱敏报告的建议与原报告一致又不泄露包名
+    redacted_game_aliases: set[str] = field(default_factory=set)
     # charge_logger（BMS 电池管理芯片日志）侧信道；抓包时刻取最后一条有效记录
     bms_full_capacity: Optional[float] = None
     bms_design_capacity: Optional[float] = None
@@ -778,7 +780,7 @@ class BatteryInfo:
                         f"系统组件 {label} 耗电突出",
                         "多由系统服务或硬件链路（基带、音频、定位等）引起，无法按应用限制；重启后复测，持续偏高再联系官方售后",
                     )
-                elif _looks_like_game(package):
+                elif _looks_like_game(package) or package in self.redacted_game_aliases:
                     title, action = f"游戏 {label} 耗电突出", "游戏时尽量用 Wi-Fi、降低画质和帧率，避免边充边玩"
                 else:
                     title, action = f"应用 {label} 耗电突出", "检查该应用的后台与自启动权限，必要时限制后台运行"
@@ -1552,6 +1554,7 @@ class BatteryExtractor:
             stats_overflow = False
             longest_stats = ""
             longest_stats_count = 0
+            file_report_time: Optional[str] = None
             power_lines: list[str] = []
             wakelock_lines: list[str] = []
             pending_chars = 0
@@ -1618,10 +1621,10 @@ class BatteryExtractor:
                 if '[ro.' in line and self._parse_property_line(line, info):
                     continue
 
-                if info.report_time is None and '== dumpstate' in line:
+                if file_report_time is None and '== dumpstate' in line:
                     m = self._RE_REPORT_TIME.search(line)
                     if m:
-                        info.report_time = m.group(1).strip()
+                        file_report_time = m.group(1).strip()
 
                 if stripped == 'Current Battery Service state:':
                     in_battery_state = True
@@ -1690,6 +1693,9 @@ class BatteryExtractor:
             if longest_stats:
                 # 原文展示最完整的一段；各段字段按出现顺序合并（后出现的覆盖）。
                 info.statistics = longest_stats
+            if file_report_time and (longest_stats or info.report_time is None):
+                # 诊断时间跟随统计段：后解析的 bugreport 覆盖统计时一并覆盖时间，其余文件只补空缺
+                info.report_time = file_report_time
             if in_power_use and power_lines:
                 self._parse_power_use_text('\n'.join(power_lines), info)
             if in_wakelock_leaders and wakelock_lines:
@@ -2404,6 +2410,10 @@ def redacted_copy(info: BatteryInfo) -> BatteryInfo:
     copy.bluetooth_connected_devices = [f"蓝牙设备{index}" for index, _ in enumerate(info.bluetooth_connected_devices, 1)]
     aliases = {package: f"应用#{index}" for index, package in enumerate(sorted(set(info.uid_packages.values())), 1)}
     copy.uid_packages = {uid: aliases[package] for uid, package in info.uid_packages.items()}
+    copy.redacted_game_aliases = {
+        alias for package, alias in aliases.items()
+        if _looks_like_game(package) or package in info.redacted_game_aliases
+    }
     copy.top_cpu_processes = [
         dataclass_replace(item, name=f"进程#{index}") for index, item in enumerate(info.top_cpu_processes, 1)
     ]

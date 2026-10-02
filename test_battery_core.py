@@ -336,6 +336,28 @@ class BatteryCoreTests(unittest.TestCase):
         self.assertEqual(info.full_capacity, 3900)
         self.assertEqual(info.report_time, "2026-06-26 12:00:00")
 
+    def test_report_time_follows_the_bugreport_that_supplies_statistics(self):
+        def bugreport(time_text, capacity=None):
+            lines = [f"== dumpstate: {time_text}"]
+            if capacity:
+                lines += ["Statistics since last charge:", f"  Estimated battery capacity: {capacity} mAh", ""]
+            inner = io.BytesIO()
+            with zipfile.ZipFile(inner, "w") as zf:
+                zf.writestr("bugreport-demo.txt", "\n".join(lines))
+            return inner.getvalue()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "multi.zip"
+            with zipfile.ZipFile(report_path, "w") as outer:
+                outer.writestr("bugreport-2026-09-30.zip", bugreport("2026-09-30 10:00:00"))
+                outer.writestr("bugreport-2026-09-20.zip", bugreport("2026-09-20 09:00:00", 4600))
+                outer.writestr("bugreport-2026-09-01.zip", bugreport("2026-09-01 08:00:00", 4500))
+            info = BatteryExtractor().extract(report_path)
+
+        # 统计取日期最新且带统计段的一份，诊断时间必须与之同源；不带统计段的更新文件不覆盖时间
+        self.assertEqual(info.estimated_capacity, 4600)
+        self.assertEqual(info.report_time, "2026-09-20 09:00:00")
+
     def test_rating_boundaries_match_documented_table(self):
         self.assertEqual(get_rating_text(100), "极佳状态")
         self.assertEqual(get_rating_color(100), "#27ae60")
@@ -873,9 +895,11 @@ class EvidenceAndChargeLoggerTests(unittest.TestCase):
         self.assertFalse(any(line.startswith("统计窗口") for line in info.summary_lines))
 
     def test_root_cause_advice_matches_uid_kind(self):
-        def cause(uid, packages=None):
+        def cause(uid, packages=None, redact=False):
             info = BatteryInfo(total_discharge_mah=1000, top_uid_power=[battery_core.UidPower(uid, 400)],
                                uid_packages=packages or {})
+            if redact:
+                info = redacted_copy(redacted_copy(info))
             return next((title, action) for title, action in info.root_causes if "耗电突出" in title)
 
         title, action = cause("1041")
@@ -887,6 +911,13 @@ class EvidenceAndChargeLoggerTests(unittest.TestCase):
         title, action = cause("u0a301", {"u0a301": "com.example.notes"})
         self.assertTrue(title.startswith("应用 "))
         self.assertNotIn("画质", action)
+        # 脱敏（含重复脱敏）只换掉包名，建议类别保持不变
+        title, action = cause("u0a300", {"u0a300": "com.example.osgame"}, redact=True)
+        self.assertTrue(title.startswith("游戏 u0a300(应用#1)"), title)
+        self.assertIn("降低画质", action)
+        self.assertNotIn("osgame", title)
+        title, action = cause("u0a301", {"u0a301": "com.example.notes"}, redact=True)
+        self.assertTrue(title.startswith("应用 u0a301(应用#1)"), title)
 
     def test_connectivity_uses_rate_when_window_is_known(self):
         day = BatteryInfo(connectivity_changes=300, time_on_battery_seconds=24 * 3600)
