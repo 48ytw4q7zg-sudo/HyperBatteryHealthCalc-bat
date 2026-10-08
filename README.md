@@ -6,11 +6,11 @@
 |------|------|
 | GitHub 源码仓库 | [48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat](https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat) |
 | Gitee 源码仓库 | [qinxinwei123/hyper-battery-health-calc-bat](https://gitee.com/qinxinwei123/hyper-battery-health-calc-bat) |
-| 最新 Windows x64 便携包 | [Release portable-20260913](https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/tag/portable-20260913) |
+| 最新 Windows x64 便携包 | [Release portable-20261009](https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/tag/portable-20261009) |
 | 上游网页版 | [Hikimucheno/HyperBatteryHealthCalc](https://hikimucheno.github.io/HyperBatteryHealthCalc/) |
 | 相关第三方 | 微信搜索「电池健康报告」（可检测小米、vivo、荣耀、红魔、三星） |
 
-**当前交付状态**：源码 `master` 分支 + Windows 11 x64 便携发行 `portable-20260913`（`release-verified`）。构建源码提交 `da69b92`；ZIP SHA256 `e7630bef8a9d7665c9ba2ba856d33768aa6605be1dfcc437178149e7ddd228ea`。验收边界见 [docs/portable-delivery-20260912.md](docs/portable-delivery-20260912.md)。
+**当前交付状态**：源码 `master` 分支 + Windows 11 x64 便携发行 `portable-20261009`（`release-verified`）。构建源码提交 `2a1a625`；ZIP SHA256 `9d891326cc21c90317c41c677800fa49bafea5f74240ed2c9f895795724a5551`。验收边界与独立复查记录见 [docs/portable-delivery-20261009.md](docs/portable-delivery-20261009.md)。
 
 ---
 
@@ -52,7 +52,8 @@ HyperBatteryHealthCalc-main/                 # 本仓库根目录（GitHub maste
 │   └── test_portable.py / test_gui_export.py
 ├── docs/                                    # 验收 / 功能完整性 / 发行记录
 │   ├── functional-completion.md
-│   └── portable-delivery-20260912.md        # 最新便携交付记录
+│   ├── portable-delivery-20260912.md        # 上一版便携交付记录
+│   └── portable-delivery-20261009.md        # 最新便携交付记录
 ├── build_windows.ps1                        # 一键 Windows 便携构建脚本
 ├── test_battery_core.py                     # 核心回归
 ├── test_functional_completion.py            # 功能完整性回归
@@ -113,8 +114,8 @@ HyperBatteryHealthCalc-main/                 # 本仓库根目录（GitHub maste
 (Get-CimInstance Win32_ComputerSystem).SystemType   # 应含 x64-based
 
 # 2) 下载 Release 资产 HyperBatteryHealthCalc-Windows-x64.zip
-#    https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/tag/portable-20260913
-#    ZIP SHA256: e7630bef8a9d7665c9ba2ba856d33768aa6605be1dfcc437178149e7ddd228ea
+#    https://github.com/48ytw4q7zg-sudo/HyperBatteryHealthCalc-bat/releases/tag/portable-20261009
+#    ZIP SHA256: 9d891326cc21c90317c41c677800fa49bafea5f74240ed2c9f895795724a5551
 
 # 3) 解压到可写目录（示例）
 New-Item -ItemType Directory -Force D:\Tools | Out-Null
@@ -202,7 +203,7 @@ python .\battery_gui.py
 5. 下载完按 `Ctrl+J`，点文件夹图标，进入「下载」目录。
 
 > GitHub 打不开：用 Gitee 仓库找同样的 Release，或让能上网的人下好后用 U 盘拷给你。  
-> 当前发行 `portable-20260913`，ZIP 约 14 MB，SHA256 见发行页（可选校验）。
+> 当前发行 `portable-20261009`，ZIP 约 15 MB，SHA256 见发行页（可选校验）。
 
 ### 第 2 步：解压（最容易错的一步）
 
@@ -329,7 +330,7 @@ python battery_gui.py
 | GitHub 下不动 | 网络 | Gitee 或代下 |
 | Win10 上行为异常 | **未实机验证的边界** | 可尝试；不能当作官方支持声明 |
 
-更完整边界见 [docs/portable-delivery-20260912.md](docs/portable-delivery-20260912.md)、[docs/functional-completion.md](docs/functional-completion.md)、[packaging/PORTABLE_README.txt](packaging/PORTABLE_README.txt)。
+更完整边界见 [docs/portable-delivery-20261009.md](docs/portable-delivery-20261009.md)、[docs/functional-completion.md](docs/functional-completion.md)、[packaging/PORTABLE_README.txt](packaging/PORTABLE_README.txt)。
 
 ---
 ## 功能特点
