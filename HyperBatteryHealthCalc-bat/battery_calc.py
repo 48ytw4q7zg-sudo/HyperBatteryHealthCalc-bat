@@ -18,6 +18,7 @@ from battery_core import (
     BatteryExtractor,
     BatteryInfo,
     apply_manual_design_capacity,
+    batch_failure_reason,
     build_report_payload,
     file_fingerprint,
     format_batch_summary,
@@ -454,23 +455,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         except zipfile.BadZipFile as e:
             print(f" 失败\n  [错误] ZIP 文件损坏或格式不正确: {e}")
             failed += 1
-            batch_results.append((label, None, "ZIP 文件损坏或格式不正确"))
+            batch_results.append((label, None, batch_failure_reason(e)))
         except PermissionError as e:
             print(f" 失败\n  [错误] 文件访问被拒绝: {e}")
             failed += 1
-            batch_results.append((label, None, "文件访问被拒绝"))
+            batch_results.append((label, None, batch_failure_reason(e)))
         except OSError as e:
             print(f" 失败\n  [错误] 文件系统错误: {e}")
             failed += 1
-            batch_results.append((label, None, "文件系统错误"))
+            batch_results.append((label, None, batch_failure_reason(e)))
         except ValueError as e:
             print(f" 失败\n  [错误] {e}")
             failed += 1
-            batch_results.append((label, None, "未找到可解析的诊断数据"))
+            batch_results.append((label, None, batch_failure_reason(e)))
         except Exception as e:
             print(f" 失败\n  [错误] 未知错误: {type(e).__name__}: {e}")
             failed += 1
-            batch_results.append((label, None, type(e).__name__))
+            batch_results.append((label, None, batch_failure_reason(e)))
 
     print(f"\n{'=' * 42}")
     print(f"处理完成: {success} 成功, {failed} 失败, {skipped} 跳过")

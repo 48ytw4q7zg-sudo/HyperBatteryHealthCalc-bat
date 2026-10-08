@@ -36,7 +36,7 @@ function loadPage(relativePath) {
             this.listeners.get(type).push(listener);
         },
         dispatchEvent(event) {
-            for (const listener of this.listeners.get(event.type) || []) listener.call(this, event);
+            this.lastDispatch = (this.listeners.get(event.type) || []).map(listener => listener.call(this, event));
             return true;
         },
         appendChild(child) { this.children.push(child); child.parentNode = this; return child; },
@@ -138,8 +138,10 @@ async function choose(page, file) {
 }
 
 async function recalculate(page) {
-    return trackWork(page, page.context.extractDeviceInfo ? 'processZipFile' : 'parseZipAndRender',
-        () => page.element('calculate-btn').click());
+    if (!page.context.extractDeviceInfo) return trackWork(page, 'parseZipAndRender', () => page.element('calculate-btn').click());
+    // 根目录页没有可复用的解析结果时会先完整重新解析再计算：等整个异步点击处理结束
+    page.element('calculate-btn').click();
+    return Promise.all(page.element('calculate-btn').lastDispatch || []);
 }
 
 function capacityInput(page, value) {
@@ -398,7 +400,7 @@ async function runExportRegressions() {
             await choose(page, file);
             capacityInput(page, '5000');
             await recalculate(page);
-            check.equal(attempts, 2, 'The manual retry must exercise the uncached calculation path');
+            check.equal(attempts, 2, 'The manual retry must re-read the archive after the failed first parse');
             check.equal(innerReads, omission === 'oversized inner ZIP' ? 0 : 1);
             check.equal(page.closed, omission === 'corrupt inner directory' ? 3 : 2, 'Failed readers must still close');
             check.match(page.element('result').textContent, /\uff081 \u5904\uff09/, 'The rendered report must disclose the omitted ZIP');
@@ -408,7 +410,7 @@ async function runExportRegressions() {
             assertCleanedUp(page);
             check.match(saved.text, /\uff081 \u5904\uff09/, 'The exported report must disclose the omitted ZIP');
             await recalculate(page);
-            check.equal(attempts, 3, 'A repeated retry must read the archive again');
+            check.equal(attempts, 2, 'A repeated retry reuses the completed re-parse instead of reading the archive again');
             check.match(page.element('result').textContent, /\uff081 \u5904\uff09/, 'Warning counts must reset before another retry');
             const repeated = await download(page);
             check.match(repeated.text, /\uff081 \u5904\uff09/, 'Repeated exports must not accumulate warning counts');
@@ -774,7 +776,50 @@ async function runProgressAndDriftRegressions() {
         parseText(dump('2026-09-20 09:00:00', 4600), timed);
         parseText(dump('2026-09-30 10:00:00'), timed);
         assert.equal(timed.reportTime, '2026-09-20 09:00:00', `${name}: report time follows the statistics source`);
-        assertions += 12;
+        parseText('Statistics since last charge:\n  Estimated battery capacity: 4700 mAh\n\n', timed);
+        assert.equal(timed.reportTime, null, `${name}: a statistics file without a dumpstate line clears the stale time`);
+        // 条目顺序与 Python 核心一致：非 bugreport 内层包 → bugreport 内层包（按路径） → health 文本 → 其它文本
+        const order = page.context.orderZipEntries([
+            {filename: 'b/bugreport-2026-09-30.zip'}, {filename: 'bugreport.txt'}, {filename: 'logs.zip'},
+            {filename: 'android.hardware.health.txt'}, {filename: 'a/bugreport-2026-09-01.zip'}]).map(item => item.filename);
+        assert.deepEqual([...order], ['logs.zip', 'a/bugreport-2026-09-01.zip', 'b/bugreport-2026-09-30.zip',
+            'android.hardware.health.txt', 'bugreport.txt'], `${name}: entries follow the Python parse order`);
+        // 重新选择文件（这里改选非 zip）会中止仍在进行的读取并收起“取消解析”
+        const slow = delayedEntry();
+        const stale = choose(page, {name: 'slow.zip', size: 1, entries: [slow.entry]});
+        await waitForRead(slow);
+        page.element('zip-file').files = [{name: 'notes.txt', size: 1}];
+        page.element('zip-file').dispatchEvent({type: 'change'});
+        assert.equal(page.element('cancel-parse-btn').style.display, 'none', `${name}: reselecting stops the running parse`);
+        slow.resolve('[ro.product.model]: [Stale Device]\n' + stats(5000));
+        await stale;
+        assert.doesNotMatch(page.element('result').innerHTML, /Stale Device/, `${name}: a stopped parse must not render`);
+        assertions += 16;
+    }
+    {
+        // 根目录页：首次自动解析被取消后点“计算”，不填容量也会完整重新解析（含 health 节点）
+        const page = loadPage('index.html');
+        page.context.zip = createZipRuntime();
+        const control = delayedEntry();
+        const pending = choose(page, {name: 'retry.zip', size: 1, entries: [
+            entry('android.hardware.health.txt', 'batteryFullChargeDesignCapacityUah: 5000000\n'), control.entry]});
+        await waitForRead(control);
+        page.element('cancel-parse-btn').click();
+        control.resolve('[ro.product.model]: [Retry Device]\n' + stats(5000));
+        await pending;
+        await recalculate(page);
+        assert.match(page.element('result').innerHTML, /Retry Device/, 'root: 计算 after a cancelled parse must rerun the full parse');
+        assert.doesNotMatch(page.element('result').innerHTML, /请输入一个有效的初始电池容量/, 'root: no capacity error after cancel');
+        // 同一文件的多个统计段分别解析、后一段覆盖，展示最完整的一段，不再拼接
+        const blocks = 'Statistics since last charge:\n  Time on battery: 1h 0m 0s 0ms\n  Discharge: 100 mAh\n\n'
+            + 'Statistics since last charge:\n  Min learned battery capacity: 4500 mAh\n  Discharge: 2000 mAh\n\n';
+        const data = page.context.extractDataFromText(blocks);
+        assert.equal(data.statisticsBlocks.length, 2, 'root: each statistics block is kept separately');
+        assert.doesNotMatch(data.statistics, /100 mAh/, 'root: statistics blocks must not be concatenated');
+        const merged = {reportTime: null, statistics: null};
+        page.context.enrichInfoFromBugreportText(blocks, merged);
+        assert.deepEqual([merged.minLearnedCapacity, merged.totalDischargeMah], [4500, 2000], 'root: the later block overrides');
+        assertions += 5;
     }
     // 两个网页同名函数（含 async）必须逐字一致，只放行各自的界面函数；防止一页修了另一页漏改。
     // parseBugreportTxtEntry 是两页各自 bugreport 流水线的入口（根目录页把提取结果返回给 processZipFile，便携页直接写入 info）。

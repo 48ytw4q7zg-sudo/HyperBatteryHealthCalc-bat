@@ -358,6 +358,41 @@ class BatteryCoreTests(unittest.TestCase):
         self.assertEqual(info.estimated_capacity, 4600)
         self.assertEqual(info.report_time, "2026-09-20 09:00:00")
 
+    def test_later_bugreport_overrides_traffic_and_time_consistently(self):
+        def bugreport(lines):
+            inner = io.BytesIO()
+            with zipfile.ZipFile(inner, "w") as zf:
+                zf.writestr("bugreport-demo.txt", "\n".join(lines))
+            return inner.getvalue()
+
+        stats = ["Statistics since last charge:", "  Estimated battery capacity: 4600 mAh", ""]
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "multi.zip"
+            with zipfile.ZipFile(report_path, "w") as outer:
+                outer.writestr("bugreport-2026-09-01.zip", bugreport(
+                    ["== dumpstate: 2026-09-01 08:00:00", "     Wifi data received: 1024B"] + stats))
+                outer.writestr("bugreport-2026-09-30.zip", bugreport(
+                    ["     Wifi data received: 4096B", "     Wifi data received: 8192B"] + stats))
+            info = BatteryExtractor().extract(report_path)
+
+        # 流量：每份文件取首次出现的值，后解析的文件覆盖（与网页一致）；
+        # 统计来自缺 dumpstate 行的后一份时，诊断时间置空，而不是沿用前一份的时间
+        self.assertEqual(info.wifi_received_bytes, 4096)
+        self.assertIsNone(info.report_time)
+
+    def test_payload_evidence_reasons_and_shared_batch_failure_reasons(self):
+        info = BatteryInfo(design_capacity=5000, design_capacity_source="hardware health 设计容量")
+        self.assertIsNone(info.health_percentage)
+        payload = build_report_payload(info)
+        self.assertIsNone(payload["health"]["evidence_level"])
+        self.assertEqual(payload["health"]["evidence_reasons"], [])
+        reason = battery_core.batch_failure_reason
+        self.assertEqual(reason(zipfile.BadZipFile("bad")), "ZIP 文件损坏或格式不正确")
+        self.assertEqual(reason(PermissionError()), "文件访问被拒绝")
+        self.assertEqual(reason(FileNotFoundError()), "文件系统错误")
+        self.assertEqual(reason(ValueError("no data")), "未找到可解析的诊断数据")
+        self.assertEqual(reason(RuntimeError()), "RuntimeError")
+
     def test_rating_boundaries_match_documented_table(self):
         self.assertEqual(get_rating_text(100), "极佳状态")
         self.assertEqual(get_rating_color(100), "#27ae60")

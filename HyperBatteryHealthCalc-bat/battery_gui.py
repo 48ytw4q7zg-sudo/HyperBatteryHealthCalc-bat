@@ -21,6 +21,7 @@ from battery_core import (
     BatteryInfo,
     ExtractionCancelled,
     apply_manual_design_capacity,
+    batch_failure_reason,
     build_report_payload,
     file_fingerprint,
     format_batch_summary,
@@ -478,11 +479,9 @@ class BatteryHealthApp:
                         info = extractor.extract(path)
                     except ExtractionCancelled:
                         raise
-                    except zipfile.BadZipFile:
-                        results.append((label, None, 'ZIP 文件损坏或格式不正确'))
-                        continue
                     except Exception as exc:
-                        results.append((label, None, type(exc).__name__))
+                        # 与 CLI 共用失败原因映射，汇总里不再出现异常类名
+                        results.append((label, None, batch_failure_reason(exc)))
                         continue
                     # 与单文件分析一致：填写了设计容量就覆盖自动检测值。
                     if manual.has_design_capacity:

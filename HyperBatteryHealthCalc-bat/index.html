@@ -719,6 +719,7 @@
         });
 
         function handleFileSelect() {
+            stopActiveParse();
             parseRevision += 1;
             lastParsedResult = null;
             clearExportReport();
@@ -782,11 +783,33 @@
             return options;
         }
 
-        function cancelActiveParse() {
-            if (!parseInProgress) return;
+        // 中止正在进行的解析并作废其结果（不改提示）；“取消解析”和重新选文件共用
+        function stopActiveParse() {
+            if (!parseInProgress) return false;
             if (activeParseAbort) activeParseAbort.abort();
             invalidateActiveParse();
             endParseProgress(activeParseToken);
+            return true;
+        }
+
+        // 与 Python 核心同一解析顺序：先非 bugreport 内层包、再 bugreport 内层包（组内按完整路径字典序），
+        // 然后 health 文本、最后其它文本（这两组保持原顺序）；后解析的文件覆盖统计与诊断时间。
+        function orderZipEntries(entries) {
+            const rank = (name) => {
+                const lower = String(name || '').toLowerCase();
+                if (lower.endsWith('.zip')) return lower.replace(/\\/g, '/').split('/').pop().includes('bugreport') ? 1 : 0;
+                return lower.includes('android.hardware.health') ? 2 : 3;
+            };
+            return Array.from(entries || [], (entry, index) => {
+                const name = String((entry && entry.filename) || '');
+                return {entry, index, name, rank: rank(name)};
+            }).sort((a, b) => a.rank - b.rank
+                || (a.rank < 2 && a.name !== b.name ? (a.name < b.name ? -1 : 1) : a.index - b.index))
+                .map(item => item.entry);
+        }
+
+        function cancelActiveParse() {
+            if (!stopActiveParse()) return;
             clearExportReport();
             // 首次自动解析被取消时这两个控件仍是隐藏的；恢复显示，提示里的“计算”才点得到
             document.getElementById('manual-input-container').style.display = 'block';
@@ -931,7 +954,7 @@
                 reader = cachedResult ? null : new zip.ZipReader(new zip.BlobReader(file));
                 const entries = reader ? await reader.getEntries() : [];
 
-                for (const entry of entries) {
+                for (const entry of orderZipEntries(entries)) {
                     if (!isCurrent()) return;
                     const entryName = entry.filename || '';
                     if (entryName.endsWith('/')) continue;
@@ -951,7 +974,7 @@
                             innerReader = new zip.ZipReader(new zip.BlobReader(innerBlob));
                             const innerEntries = await innerReader.getEntries();
 
-                            for (const innerEntry of innerEntries) {
+                            for (const innerEntry of orderZipEntries(innerEntries)) {
                                 if (!isCurrent()) return;
                                 const innerName = innerEntry.filename || '';
                                 if (innerName.endsWith('/')) continue;
@@ -1242,8 +1265,9 @@
                 parseStatsText(info.statistics, info);
                 sawStats = true;
             }
-            // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 同时提供时间，其余文件只补空缺
-            if (fileReportTime && (sawStats || !info.reportTime)) info.reportTime = fileReportTime;
+            // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 一并决定时间（缺时间行则置空），其余文件只补空缺
+            if (sawStats) info.reportTime = fileReportTime;
+            else if (fileReportTime && !info.reportTime) info.reportTime = fileReportTime;
             parsePowerUseStats(text, info);
             parseWakelockLeaders(text, info);
             parseConnectivityPowerStats(text, info);

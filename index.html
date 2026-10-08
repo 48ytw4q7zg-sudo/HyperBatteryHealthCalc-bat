@@ -740,6 +740,7 @@
         });
 
         function handleFileSelect() {
+            stopActiveParse();
             detectedInitialCapacity = null;
             analysisRevision += 1;
             lastParsedFile = null;
@@ -893,11 +894,33 @@
             return options;
         }
 
-        function cancelActiveParse() {
-            if (!parseInProgress) return;
+        // 中止正在进行的解析并作废其结果（不改提示）；“取消解析”和重新选文件共用
+        function stopActiveParse() {
+            if (!parseInProgress) return false;
             if (activeParseAbort) activeParseAbort.abort();
             invalidateActiveParse();
             endParseProgress(activeParseToken);
+            return true;
+        }
+
+        // 与 Python 核心同一解析顺序：先非 bugreport 内层包、再 bugreport 内层包（组内按完整路径字典序），
+        // 然后 health 文本、最后其它文本（这两组保持原顺序）；后解析的文件覆盖统计与诊断时间。
+        function orderZipEntries(entries) {
+            const rank = (name) => {
+                const lower = String(name || '').toLowerCase();
+                if (lower.endsWith('.zip')) return lower.replace(/\\/g, '/').split('/').pop().includes('bugreport') ? 1 : 0;
+                return lower.includes('android.hardware.health') ? 2 : 3;
+            };
+            return Array.from(entries || [], (entry, index) => {
+                const name = String((entry && entry.filename) || '');
+                return {entry, index, name, rank: rank(name)};
+            }).sort((a, b) => a.rank - b.rank
+                || (a.rank < 2 && a.name !== b.name ? (a.name < b.name ? -1 : 1) : a.index - b.index))
+                .map(item => item.entry);
+        }
+
+        function cancelActiveParse() {
+            if (!stopActiveParse()) return;
             clearExportReport();
             // 首次自动解析被取消时这两个控件仍是隐藏的；恢复显示，提示里的“计算”才点得到
             document.getElementById('manual-input-container').style.display = 'block';
@@ -959,14 +982,18 @@
             parseConnectivityPowerStats(content, infoTarget);
             parseBluetoothStats(content, infoTarget);
             parseCpuSnapshot(content, infoTarget);
-            // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 同时提供时间，其余文件只补空缺
-            if (extractedData.reportTime && (extractedData.statistics || !infoTarget.reportTime)) {
+            // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 一并决定时间（缺时间行则置空），其余文件只补空缺
+            if (extractedData.statistics) {
+                infoTarget.reportTime = extractedData.reportTime || null;
+            } else if (extractedData.reportTime && !infoTarget.reportTime) {
                 infoTarget.reportTime = extractedData.reportTime;
             }
             if (extractedData.statistics) {
                 infoTarget.statistics = extractedData.statistics;
-                const stats = extractBatteryCapacityFromStatistics(extractedData.statistics);
-                Object.assign(infoTarget, stats);
+                // 与 Python 核心一致：各统计段按出现顺序解析，后一段覆盖它包含的字段
+                for (const block of extractedData.statisticsBlocks) {
+                    Object.assign(infoTarget, extractBatteryCapacityFromStatistics(block));
+                }
                 applyEstimatedCapacityAsDesign(infoTarget);
             }
             if (extractedData.batteryState) {
@@ -1030,7 +1057,7 @@
                 reader = new zip.ZipReader(new zip.BlobReader(file));
                 const entries = await reader.getEntries();
 
-                for (const entry of entries) {
+                for (const entry of orderZipEntries(entries)) {
                     if (!isCurrent()) return;
                     const entryName = entry.filename || '';
                     if (entryName.endsWith('/')) {
@@ -1057,7 +1084,7 @@
                             innerReader = new zip.ZipReader(new zip.BlobReader(innerZipBlob));
                             const innerEntries = await innerReader.getEntries();
 
-                            for (const innerEntry of innerEntries) {
+                            for (const innerEntry of orderZipEntries(innerEntries)) {
                                 if (!isCurrent()) return;
                                 const innerName = innerEntry.filename || '';
                                 if (innerName.endsWith('/')) {
@@ -1213,6 +1240,7 @@
             let inStatisticsSection = false;
             let inBatteryState = false;
             let statisticsLines = [];
+            const statisticsBlocks = [];
 
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i].trim();
@@ -1266,27 +1294,32 @@
 
                 // 提取电池统计信息
                 if (line.startsWith('Statistics since last charge:')) {
+                    // 新的统计段：上一段单独收尾，避免两段拼接后字段错配
+                    if (statisticsLines.length) statisticsBlocks.push(statisticsLines.join('\n'));
+                    statisticsLines = [line];
                     inStatisticsSection = true;
-                    statisticsLines.push(line);
                 } else if (inStatisticsSection) {
                     if (line === '') {
                         inStatisticsSection = false;
-                        statistics = statisticsLines.join('\n');
+                        statisticsBlocks.push(statisticsLines.join('\n'));
+                        statisticsLines = [];
                     } else {
                         statisticsLines.push(line);
                     }
                 }
             }
+            if (statisticsLines.length) statisticsBlocks.push(statisticsLines.join('\n'));
 
-            // 如果没有在循环中设置 statistics，但 statisticsLines 不为空
-            if (inStatisticsSection && statisticsLines.length > 0) {
-                statistics = statisticsLines.join('\n');
+            // 原文展示最完整的一段（行数相同取后一段，与 Python 核心一致）；字段由调用方按 statisticsBlocks 逐段合并
+            for (const block of statisticsBlocks) {
+                if (!statistics || block.split('\n').length >= statistics.split('\n').length) statistics = block;
             }
 
             return {
                 reportTime,
                 device,
                 statistics,
+                statisticsBlocks,
                 batteryState
             };
         }
@@ -1421,6 +1454,13 @@
             if (file.size <= 0) {
                 showError(resultDiv, "所选文件为空，请重新导出并上传完整诊断包");
                 return;
+            }
+
+            if (lastParsedFile !== file) {
+                // 首次自动解析被取消或未完成时没有可复用的结果：先完整重新解析（含 health 节点），与便携页一致
+                showStatus("正在自动分析电池数据，请稍候...");
+                await extractDeviceInfo(file);
+                if (lastParsedFile !== file || !initialCapacityInput.value.trim()) return;
             }
 
             const initialCapacity = Number(initialCapacityInput.value);
@@ -1623,12 +1663,8 @@
                     const extractedData = await parseBugreportTxtEntry(entry, infoTarget);
                     if (!isCurrent()) return false;
                     hasParsableBugreport = true;
+                    // 各统计段已由 enrichInfoFromBugreportText 逐段写入 infoTarget（即 autoExtractedInfo）
                     const statistics = extractedData ? extractedData.statistics : null;
-                    if (statistics) {
-                        const stats = extractBatteryCapacityFromStatistics(statistics);
-                        Object.assign(autoExtractedInfo, stats);
-                        applyEstimatedCapacityAsDesign(autoExtractedInfo);
-                    }
                     const capacityInfo = getCurrentCapacityInfo(autoExtractedInfo);
                     return renderBugreportResult(statistics, capacityInfo);
                 } catch (error) {
@@ -1656,7 +1692,7 @@
                 showStatus("正在解压外层文件...");
                 const entries = await reader.getEntries();
 
-                for (const entry of entries) {
+                for (const entry of orderZipEntries(entries)) {
                     if (!isCurrent()) return;
                     if ((entry.filename || '').endsWith('/')) {
                         continue;
@@ -1691,7 +1727,7 @@
                             showStatus("正在查找包含电池容量信息的文件...");
                             const innerEntries = await innerReader.getEntries();
 
-                            for (const innerEntry of innerEntries) {
+                            for (const innerEntry of orderZipEntries(innerEntries)) {
                                 if (!isCurrent()) return;
                                 if ((innerEntry.filename || '').endsWith('/')) {
                                     continue;

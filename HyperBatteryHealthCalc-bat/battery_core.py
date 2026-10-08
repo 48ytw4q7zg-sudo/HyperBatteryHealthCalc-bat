@@ -1491,8 +1491,8 @@ class BatteryExtractor:
     def _find_inner_zips(cls, outer_zip: zipfile.ZipFile) -> tuple[list[str], list[str]]:
         """内层包的解析顺序要与合并语义配套：统计字段由后解析的包覆盖。
 
-        其它包先解析、bugreport 包最后解析，组内沿用旧版的文件名字典序，
-        因此文件名带日期的多份 bugreport 中日期最新的一份生效；已知无关包直接跳过。
+        其它包先解析、bugreport 包最后解析，组内沿用旧版的完整路径字典序（两个网页的 orderZipEntries 同序），
+        同一目录、同一前缀的带日期文件名即按日期先后，排在最后的一份生效；已知无关包直接跳过。
         """
         candidates = []
         skipped = []
@@ -1555,6 +1555,8 @@ class BatteryExtractor:
             longest_stats = ""
             longest_stats_count = 0
             file_report_time: Optional[str] = None
+            # 流量与时长：每份文件取首次出现的值，后解析的文件覆盖先前的（与网页一致）
+            connectivity_seen: set[str] = set()
             power_lines: list[str] = []
             wakelock_lines: list[str] = []
             pending_chars = 0
@@ -1584,7 +1586,7 @@ class BatteryExtractor:
                 if '/' in line or ':"' in line:
                     self._parse_uid_package_line(line, info)
                 if 'cellular' in lowered or 'wifi' in lowered:
-                    self._parse_connectivity_line(stripped, info)
+                    self._parse_connectivity_line(stripped, info, connectivity_seen)
                 if 'bluetooth' in lowered:
                     self._parse_bluetooth_stats_line(stripped, info)
 
@@ -1693,8 +1695,9 @@ class BatteryExtractor:
             if longest_stats:
                 # 原文展示最完整的一段；各段字段按出现顺序合并（后出现的覆盖）。
                 info.statistics = longest_stats
-            if file_report_time and (longest_stats or info.report_time is None):
-                # 诊断时间跟随统计段：后解析的 bugreport 覆盖统计时一并覆盖时间，其余文件只补空缺
+                # 诊断时间跟随统计段：提供统计段的文件一并决定时间；它缺 dumpstate 行时置空，避免时间与统计错配
+                info.report_time = file_report_time
+            elif file_report_time and info.report_time is None:
                 info.report_time = file_report_time
             if in_power_use and power_lines:
                 self._parse_power_use_text('\n'.join(power_lines), info)
@@ -1810,7 +1813,7 @@ class BatteryExtractor:
         if items:
             info.screen_brightnesses = sorted(items, key=lambda item: item.seconds, reverse=True)
 
-    def _parse_connectivity_line(self, line: str, info: BatteryInfo) -> None:
+    def _parse_connectivity_line(self, line: str, info: BatteryInfo, seen: set[str]) -> None:
         duration_patterns = (
             (self._RE_CELLULAR_KERNEL_ACTIVE, "cellular_kernel_active_seconds"),
             (self._RE_CELLULAR_RX_TIME, "cellular_rx_seconds"),
@@ -1819,7 +1822,8 @@ class BatteryExtractor:
         for pattern, attr in duration_patterns:
             m = pattern.search(line)
             if m:
-                if getattr(info, attr) is None:
+                if attr not in seen:
+                    seen.add(attr)
                     setattr(info, attr, _parse_duration_seconds(m.group(1)))
                 return
 
@@ -1833,7 +1837,8 @@ class BatteryExtractor:
             m = pattern.search(line)
             if m:
                 value = _parse_data_size_bytes(m.group(1))
-                if value is not None and getattr(info, attr) is None:
+                if value is not None and attr not in seen:
+                    seen.add(attr)
                     setattr(info, attr, value)
                 return
 
@@ -2453,7 +2458,7 @@ def build_report_payload(info: BatteryInfo, fingerprint: Optional[dict] = None) 
             "band": [round(band[0], 2), round(band[1], 2)] if band else None,
             "rating": info.rating_text,
             "evidence_level": level if info.health_percentage is not None else None,
-            "evidence_reasons": reasons,
+            "evidence_reasons": reasons if info.health_percentage is not None else [],
             "design_capacity_mah": info.design_capacity if info.has_design_capacity else None,
             "design_capacity_source": sources.get("design_capacity"),
             "design_capacity_confidence": confidence[0] if confidence else None,
@@ -2517,6 +2522,19 @@ def batch_summary_rows(results) -> list[list[str]]:
             "完整" if pct is not None else "部分数据",
         ])
     return rows
+
+
+def batch_failure_reason(exc: BaseException) -> str:
+    """批量汇总的失败原因：CLI 与 GUI 共用同一套中文描述。"""
+    if isinstance(exc, zipfile.BadZipFile):
+        return "ZIP 文件损坏或格式不正确"
+    if isinstance(exc, PermissionError):
+        return "文件访问被拒绝"
+    if isinstance(exc, OSError):
+        return "文件系统错误"
+    if isinstance(exc, ValueError):
+        return "未找到可解析的诊断数据"
+    return type(exc).__name__
 
 
 def format_batch_summary(results) -> str:
