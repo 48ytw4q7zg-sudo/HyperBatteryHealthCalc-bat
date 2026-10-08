@@ -683,11 +683,11 @@
         const RE_WIFI_MULTICAST_COUNT = /Total WiFi Multicast wakelock Count:\s*(\d+)/i;
         const RE_WIFI_MULTICAST_TIME = /Total WiFi Multicast wakelock time:\s*([\ddhms .]+)/i;
         const RE_CONNECTIVITY_CHANGES = /Connectivity changes:\s*(\d+)/i;
-        const RE_CELLULAR_KERNEL_ACTIVE = /Cellular kernel active time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
-        const RE_CELLULAR_RX_TIME = /Cellular Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_CELLULAR_KERNEL_ACTIVE = /Cellular kernel active time:\s*([\ddhms .]+)(?:\s*\(|$)/im;
+        const RE_CELLULAR_RX_TIME = /Cellular Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/im;
         const RE_CELLULAR_DATA_RECEIVED = /Cellular data received:\s*(\S+)/i;
         const RE_CELLULAR_DATA_SENT = /Cellular data sent:\s*(\S+)/i;
-        const RE_WIFI_SCAN_TIME = /WiFi Scan time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_WIFI_SCAN_TIME = /WiFi Scan time:\s*([\ddhms .]+)(?:\s*\(|$)/im;
         const RE_WIFI_DATA_RECEIVED = /Wifi data received:\s*(\S+)/i;
         const RE_WIFI_DATA_SENT = /Wifi data sent:\s*(\S+)/i;
         const RE_BLUETOOTH_TOTAL = /Bluetooth total received:\s*([^,]+),\s*sent:\s*(\S+)/i;
@@ -1215,6 +1215,7 @@
             let foundDevice = false;
             let fileReportTime = null;
             let sawStats = false;
+            let longestStats = '';
 
             for (const raw of lines) {
                 const line = raw.trim();
@@ -1250,8 +1251,9 @@
                 } else if (inStats) {
                     if (line === '') {
                         inStats = false;
-                        info.statistics = statsLines.join('\n');
-                        parseStatsText(info.statistics, info);
+                        const block = statsLines.join('\n');
+                        parseStatsText(block, info);
+                        if (!longestStats || statsLines.length >= longestStats.split('\n').length) longestStats = block;
                         statsLines = [];
                         sawStats = true;
                     } else {
@@ -1261,13 +1263,21 @@
             }
 
             if (inStats && statsLines.length) {
-                info.statistics = statsLines.join('\n');
-                parseStatsText(info.statistics, info);
+                const block = statsLines.join('\n');
+                parseStatsText(block, info);
+                if (!longestStats || statsLines.length >= longestStats.split('\n').length) longestStats = block;
                 sawStats = true;
             }
-            // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 一并决定时间（缺时间行则置空），其余文件只补空缺
-            if (sawStats) info.reportTime = fileReportTime;
-            else if (fileReportTime && !info.reportTime) info.reportTime = fileReportTime;
+            // 原文展示本文件最完整的一段（与 Python 核心和根目录页一致），字段已按段依次合并
+            if (longestStats) info.statistics = longestStats;
+            // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 一并决定时间（缺时间行则置空），
+            // 之后没有统计段的文件不能回填；还没有统计段决定过时才补空缺
+            if (sawStats) {
+                info.reportTime = fileReportTime;
+                info.reportTimeFromStatistics = true;
+            } else if (fileReportTime && !info.reportTime && !info.reportTimeFromStatistics) {
+                info.reportTime = fileReportTime;
+            }
             parsePowerUseStats(text, info);
             parseWakelockLeaders(text, info);
             parseConnectivityPowerStats(text, info);
@@ -1520,15 +1530,18 @@
             ];
             for (const [pattern, key] of sizeFields) {
                 const match = pattern.exec(text);
-                if (match) info[key] = parseDataSizeBytes(match[1]);
+                const value = match ? parseDataSizeBytes(match[1]) : null;
+                if (Number.isFinite(value)) info[key] = value;
             }
         }
 
         function parseBluetoothStats(text, info) {
             let match = RE_BLUETOOTH_TOTAL.exec(text);
             if (match) {
-                info.bluetoothReceivedBytes = parseDataSizeBytes(match[1]);
-                info.bluetoothSentBytes = parseDataSizeBytes(match[2]);
+                const received = parseDataSizeBytes(match[1]);
+                const sent = parseDataSizeBytes(match[2]);
+                if (Number.isFinite(received)) info.bluetoothReceivedBytes = received;
+                if (Number.isFinite(sent)) info.bluetoothSentBytes = sent;
             }
             match = RE_BLUETOOTH_SCAN.exec(text);
             if (match) info.bluetoothScanSeconds = parseDurationSeconds(match[1]);

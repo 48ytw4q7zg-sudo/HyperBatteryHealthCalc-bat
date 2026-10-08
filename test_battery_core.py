@@ -372,12 +372,17 @@ class BatteryCoreTests(unittest.TestCase):
                 outer.writestr("bugreport-2026-09-01.zip", bugreport(
                     ["== dumpstate: 2026-09-01 08:00:00", "     Wifi data received: 1024B"] + stats))
                 outer.writestr("bugreport-2026-09-30.zip", bugreport(
-                    ["     Wifi data received: 4096B", "     Wifi data received: 8192B"] + stats))
+                    ["     Wifi data received: 4096B", "     Wifi data received: 8192B",
+                     "  Bluetooth total received: 1024B, sent: 2048B", "  Bluetooth total received: 9999B, sent: 9999B",
+                     "  Bluetooth scan time: 1s 0ms", "  Bluetooth scan time: 9s 0ms"] + stats))
+                outer.writestr("bugreport-2026-10-01.zip", bugreport(["== dumpstate: 2026-10-01 09:00:00"]))
             info = BatteryExtractor().extract(report_path)
 
-        # 流量：每份文件取首次出现的值，后解析的文件覆盖（与网页一致）；
-        # 统计来自缺 dumpstate 行的后一份时，诊断时间置空，而不是沿用前一份的时间
+        # 流量与蓝牙：每份文件取首次出现的值，后解析的文件覆盖（与网页一致）；
+        # 统计来自缺 dumpstate 行的那一份时，诊断时间置空，后面没有统计段的文件也不能把旧时间补回来
         self.assertEqual(info.wifi_received_bytes, 4096)
+        self.assertEqual((info.bluetooth_received_bytes, info.bluetooth_sent_bytes), (1024, 2048))
+        self.assertEqual(info.bluetooth_scan_seconds, 1.0)
         self.assertIsNone(info.report_time)
 
     def test_payload_evidence_reasons_and_shared_batch_failure_reasons(self):

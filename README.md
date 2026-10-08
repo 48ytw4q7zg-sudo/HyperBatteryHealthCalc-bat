@@ -462,10 +462,12 @@ GUI 解析大包时状态栏显示已读 MB 与耗时，可点「取消」中止
 
 #### 1.2 核心 JavaScript 调用链
 
+两个网页共用解析函数（`test_web_logic.cjs` 要求同名函数逐字一致），入口不同：根目录 `index.html` 为 `handleFileSelect → extractDeviceInfo → processZipFile`（解析完成后由缓存直接渲染，点“计算”在没有缓存时先完整重新解析）；`HyperBatteryHealthCalc-bat/index.html` 为 `handleFileSelect / manualCalculate → parseZipAndRender`。下面以便携页为例：
+
 ```
 handleFileSelect()
-  ├── 重置 autoExtractedInfo (全部 null)
-  ├── 隐藏 manual-input / calculate-btn / result / status
+  ├── stopActiveParse()                     // 中止仍在进行的解析
+  ├── 重置结果与导出状态，隐藏 manual-input / calculate-btn / result / status
   └── parseZipAndRender(file, null)
 
 manualCalculate()
@@ -474,27 +476,14 @@ manualCalculate()
 
 parseZipAndRender(file, manualCapacity) [async]
   ├── new zip.ZipReader(new zip.BlobReader(file))
-  ├── getEntries() → 遍历外层
-  │     └── for each inner .zip:
-  │           ├── entry.getData(new zip.BlobWriter('application/zip'))
-  │           ├── new zip.ZipReader(new zip.BlobReader(innerBlob))
-  │           ├── getEntries() → 遍历内层
-  │           │     ├── [health .txt]:
-  │           │     │     RE_DESIGN → designCapacity (μAh÷1000)
-  │           │     │     RE_CYCLE  → cycleCount
-  │           │     │     RE_FULL   → fullCapacity (μAh÷1000)
-  │           │     └── [bugreport .txt]:
-  │           │           parseBugreportText(content, info)
-  │           │             ├── RE_MARKET / RE_MODEL → deviceName
-  │           │             ├── RE_DUMPSTATE → reportTime
-  │           │             └── [统计区块状态机]
-  │           │                   └── parseStatsText(text, info)
-  │           │                         ├── RE_ESTIMATED → estimatedCapacity
-  │           │                         ├── RE_LAST → lastLearnedCapacity
-  │           │                         ├── RE_MIN → minLearnedCapacity
-  │           │                         └── RE_MAX → maxLearnedCapacity
-  │           ├── [提前退出] if designCap && minLearned
-  │           └── innerReader.close()
+  ├── orderZipEntries(getEntries())         // 与 Python 同序：非 bugreport 内层包 → bugreport 内层包（按完整路径）→ health 文本 → 其它文本
+  │     └── for each inner .zip（内层条目同样按 orderZipEntries 排序）:
+  │           ├── [health .txt]    applyHealthText：同一文件取最后一次，设计容量忽略 0，循环次数/满充容量保留先解析的文件
+  │           └── [bugreport .txt] parseBugreportText(content, info)
+  │                 ├── RE_MARKET / RE_MODEL → deviceName
+  │                 ├── 统计段逐段 parseStatsText（后段覆盖），原文保留最完整的一段
+  │                 └── 诊断时间跟随提供统计段的那一份（缺 dumpstate 行时置空，不被后面的文件回填）
+  ├── 读完全部条目（不提前退出），期间可点“取消解析”
   ├── buildFullReport(info) → HTML 报告
   │     ├── getRatingText(pct) / getRatingColor(pct) ← 统一 RATING_TABLE
   │     ├── escHtml() 防 XSS
@@ -608,7 +597,7 @@ extract(zip_path) → BatteryInfo
   │     │           ├── 移动网络/Wi-Fi 流量和活跃时间
   │     │           ├── 蓝牙耗电/扫描/连接设备
   │     │           └── CPU 负载和高占用进程
-  │     └── [提前退出] has_design_capacity && current_capacity → break
+  │     └── 读完全部内层包（不提前退出），后解析的统计段覆盖先前的；可随时取消
 ```
 
 ---
@@ -787,10 +776,10 @@ exit /b 0
           ┌────────────┼────────────┐
           ▼            ▼            ▼
 ┌──────────────┐ ┌───────────┐ ┌─────────────────────────┐
-│ health 文件   │ │ bugreport  │ │ [提前退出]               │
-│ 设计容量      │ │ 设备名     │ │ has_design_capacity     │
-│ 循环次数      │ │ 时间戳     │ │ && current_capacity     │
-│ 满充容量      │ │ 统计区块   │ │ → break                 │
+│ health 文件   │ │ bugreport  │ │ charge_logger（BMS）     │
+│ 设计容量      │ │ 设备名     │ │ SoH / 循环次数          │
+│ 循环次数      │ │ 时间戳     │ │ 满充趋势                │
+│ 满充容量      │ │ 统计区块   │ │ （读完全部条目）        │
 └──────┬───────┘ └─────┬─────┘ └─────────────────────────┘
        │               │
        └───────┬───────┘
@@ -824,10 +813,10 @@ exit /b 0
 | 评分表 | 统一 `RATING_TABLE` | 统一 `_RATING_TABLE` | 统一 `_RATING_TABLE` |
 | 评分边界 | `[100.0001, Infinity]` | `(100.0001, inf)` | `(100.0001, inf)` |
 | 浮点容量处理 | `Math.round(parseFloat())` | `round(float())` | `round(float())` |
-| 提取器提前退出 | ✓ | ✓ | ✓ |
+| 读完全部条目（不提前退出，可取消） | ✓ | ✓ | ✓ |
 | 设计容量降级 | 手动输入框 | `--capacity` / 交互输入 | 手动输入框 |
 | fullCapacity 显示 | ✓ | ✓ | ✓ |
-| 多文件批量 | ✗ | ✓ | ✗ |
+| 多文件批量 | ✗ | ✓ | ✓（批量汇总，可另存 CSV） |
 | 防 XSS | `escHtml()` | N/A (终端输出) | N/A (原生控件) |
 | DPI 感知 | N/A | N/A | ✓ `SetProcessDpiAwareness` |
 

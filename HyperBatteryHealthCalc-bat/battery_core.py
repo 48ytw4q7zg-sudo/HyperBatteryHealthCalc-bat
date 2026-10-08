@@ -1150,6 +1150,7 @@ class _ExtractRun:
         self.bytes_read = 0
         self.entries = 0
         self.health_files = 0
+        self.report_time_from_stats = False
         self.current = ""
         self._last_emit = 0.0
 
@@ -1555,7 +1556,7 @@ class BatteryExtractor:
             longest_stats = ""
             longest_stats_count = 0
             file_report_time: Optional[str] = None
-            # 流量与时长：每份文件取首次出现的值，后解析的文件覆盖先前的（与网页一致）
+            # 流量、时长与蓝牙：每份文件取首次出现的值，后解析的文件覆盖先前的（与网页一致）
             connectivity_seen: set[str] = set()
             power_lines: list[str] = []
             wakelock_lines: list[str] = []
@@ -1588,7 +1589,7 @@ class BatteryExtractor:
                 if 'cellular' in lowered or 'wifi' in lowered:
                     self._parse_connectivity_line(stripped, info, connectivity_seen)
                 if 'bluetooth' in lowered:
-                    self._parse_bluetooth_stats_line(stripped, info)
+                    self._parse_bluetooth_stats_line(stripped, info, connectivity_seen)
 
                 if info.cpu_load_1m is None and 'load:' in lowered:
                     m = self._RE_CPU_LOAD.search(stripped)
@@ -1697,7 +1698,9 @@ class BatteryExtractor:
                 info.statistics = longest_stats
                 # 诊断时间跟随统计段：提供统计段的文件一并决定时间；它缺 dumpstate 行时置空，避免时间与统计错配
                 info.report_time = file_report_time
-            elif file_report_time and info.report_time is None:
+                run.report_time_from_stats = True
+            elif file_report_time and info.report_time is None and not run.report_time_from_stats:
+                # 只在还没有统计段决定过时间时补空缺；统计段置空的时间不能被后面的无统计文件回填
                 info.report_time = file_report_time
             if in_power_use and power_lines:
                 self._parse_power_use_text('\n'.join(power_lines), info)
@@ -1842,15 +1845,15 @@ class BatteryExtractor:
                     setattr(info, attr, value)
                 return
 
-    def _parse_bluetooth_stats_line(self, line: str, info: BatteryInfo) -> None:
+    def _parse_bluetooth_stats_line(self, line: str, info: BatteryInfo, seen: set[str]) -> None:
+        # 与流量一样：每份文件取首次出现的值，后解析的文件覆盖先前的（与网页一致）
         m = self._RE_BLUETOOTH_TOTAL.search(line)
         if m:
-            received = _parse_data_size_bytes(m.group(1))
-            sent = _parse_data_size_bytes(m.group(2))
-            if received is not None:
-                info.bluetooth_received_bytes = received
-            if sent is not None:
-                info.bluetooth_sent_bytes = sent
+            for attr, raw in (("bluetooth_received_bytes", m.group(1)), ("bluetooth_sent_bytes", m.group(2))):
+                value = _parse_data_size_bytes(raw)
+                if value is not None and attr not in seen:
+                    seen.add(attr)
+                    setattr(info, attr, value)
             return
 
         duration_patterns = (
@@ -1861,11 +1864,14 @@ class BatteryExtractor:
         for pattern, attr in duration_patterns:
             m = pattern.search(line)
             if m:
-                setattr(info, attr, _parse_duration_seconds(m.group(1)))
+                if attr not in seen:
+                    seen.add(attr)
+                    setattr(info, attr, _parse_duration_seconds(m.group(1)))
                 return
 
         m = self._RE_BLUETOOTH_DRAIN.search(line)
-        if m:
+        if m and "bluetooth_drain_mah" not in seen:
+            seen.add("bluetooth_drain_mah")
             info.bluetooth_drain_mah = float(m.group(1))
 
     def _parse_bluetooth_device_line(self, line: str, info: BatteryInfo) -> None:

@@ -632,7 +632,7 @@ async function runRealZipCrcRegressions() {
             const file = new Blob([bytes], {type: 'application/zip'});
             Object.defineProperty(file, 'name', {value: 'synthetic-crc-' + cases + '.zip'});
             if (manual) {
-                // No extraction cache: exercise the root retry reader with real ZIP bytes.
+                // No extraction cache: 计算 must run the full automatic parse with real ZIP bytes.
                 page.element('zip-file').files = [file];
                 capacityInput(page, '5000');
                 await page.context.calculateBatteryCapacity();
@@ -658,9 +658,9 @@ async function runRealZipCrcRegressions() {
         await run(pageName, 'valid outer CRC with bad inner bugreport then valid candidates', checkedOuterBadText, {full: true, warnings: 1});
         await run(pageName, 'valid outer CRC with bad inner health then valid candidates', checkedOuterBadHealth, {full: true, warnings: 1});
     }
-    await run('index.html', 'uncached manual path accepts valid nested ZIP', nestedGood, {full: true}, true);
-    await run('index.html', 'uncached manual path rejects outer CRC before later valid candidate', badOuter, {full: true, warnings: 1}, true);
-    await run('index.html', 'uncached manual path rejects inner text CRC before later valid candidate', checkedOuterBadText, {full: true, warnings: 1}, true);
+    await run('index.html', 'manual 计算 without a cache re-parses a valid nested ZIP', nestedGood, {full: true}, true);
+    await run('index.html', 'manual 计算 without a cache rejects outer CRC before later valid candidate', badOuter, {full: true, warnings: 1}, true);
+    await run('index.html', 'manual 计算 without a cache rejects inner text CRC before later valid candidate', checkedOuterBadText, {full: true, warnings: 1}, true);
     console.log(`${failures ? 'FAIL' : 'PASS'}: ${assertions} real zip.js CRC assertions across ${cases} cases; ${failures} failed cases; runtime SHA256 ${runtimeHashes[0]}`);
     return failures;
 }
@@ -778,6 +778,8 @@ async function runProgressAndDriftRegressions() {
         assert.equal(timed.reportTime, '2026-09-20 09:00:00', `${name}: report time follows the statistics source`);
         parseText('Statistics since last charge:\n  Estimated battery capacity: 4700 mAh\n\n', timed);
         assert.equal(timed.reportTime, null, `${name}: a statistics file without a dumpstate line clears the stale time`);
+        parseText('== dumpstate: 2026-10-01 09:00:00\n', timed);
+        assert.equal(timed.reportTime, null, `${name}: a later file without statistics must not refill the cleared time`);
         // 条目顺序与 Python 核心一致：非 bugreport 内层包 → bugreport 内层包（按路径） → health 文本 → 其它文本
         const order = page.context.orderZipEntries([
             {filename: 'b/bugreport-2026-09-30.zip'}, {filename: 'bugreport.txt'}, {filename: 'logs.zip'},
@@ -794,32 +796,59 @@ async function runProgressAndDriftRegressions() {
         slow.resolve('[ro.product.model]: [Stale Device]\n' + stats(5000));
         await stale;
         assert.doesNotMatch(page.element('result').innerHTML, /Stale Device/, `${name}: a stopped parse must not render`);
-        assertions += 16;
+        assertions += 17;
     }
     {
-        // 根目录页：首次自动解析被取消后点“计算”，不填容量也会完整重新解析（含 health 节点）
+        // 根目录页：首次自动解析在读 health 时被取消，之后点“计算”（不填容量）必须完整重新解析（含 health 节点）；
+        // 旧实现走不读 health 的简化路径，既拿不到循环次数，也会因为没有容量直接报错
         const page = loadPage('index.html');
         page.context.zip = createZipRuntime();
-        const control = delayedEntry();
+        let healthReads = 0, rejectFirst = null;
+        const healthEntry = {filename: 'android.hardware.health.txt', getData() {
+            healthReads += 1;
+            if (healthReads === 1) return new Promise((resolve, reject) => {rejectFirst = reject;});
+            return Promise.resolve('batteryFullChargeDesignCapacityUah: 5000000\nbatteryCycleCount: 321\n');
+        }};
         const pending = choose(page, {name: 'retry.zip', size: 1, entries: [
-            entry('android.hardware.health.txt', 'batteryFullChargeDesignCapacityUah: 5000000\n'), control.entry]});
-        await waitForRead(control);
+            entry('bugreport.txt', '[ro.product.model]: [Retry Device]\n' + stats(5000)), healthEntry]});
+        for (let i = 0; i < 50 && !rejectFirst; i++) await Promise.resolve();
+        assert.ok(rejectFirst, 'root: the health read must start before the cancel');
         page.element('cancel-parse-btn').click();
-        control.resolve('[ro.product.model]: [Retry Device]\n' + stats(5000));
+        rejectFirst(new Error('AbortError'));
         await pending;
-        await recalculate(page);
-        assert.match(page.element('result').innerHTML, /Retry Device/, 'root: 计算 after a cancelled parse must rerun the full parse');
+        page.element('calculate-btn').click();
+        assert.equal(page.element('calculate-btn').style.display, 'none', 'root: the retry hides 计算 like the first parse');
+        assert.equal(page.element('manual-input-container').style.display, 'none', 'root: inputs cannot change during the retry');
+        await Promise.all(page.element('calculate-btn').lastDispatch || []);
+        assert.equal(healthReads, 2, 'root: 计算 after a cancelled parse rereads the health node');
+        assert.match(page.element('result').innerHTML, /321/, 'root: the retry reports the health cycle count');
         assert.doesNotMatch(page.element('result').innerHTML, /请输入一个有效的初始电池容量/, 'root: no capacity error after cancel');
-        // 同一文件的多个统计段分别解析、后一段覆盖，展示最完整的一段，不再拼接
-        const blocks = 'Statistics since last charge:\n  Time on battery: 1h 0m 0s 0ms\n  Discharge: 100 mAh\n\n'
+        assert.equal(page.element('calculate-btn').style.display, 'block', 'root: 计算 is offered again after the retry');
+        // 统计段：空行分隔的两段分别解析、后段覆盖、展示最完整的一段；中间没有空行时按同一段处理并取首次出现的值（与 Python 一致）
+        const separated = 'Statistics since last charge:\n  Min learned battery capacity: 4000 mAh\n  Discharge: 100 mAh\n\n'
             + 'Statistics since last charge:\n  Min learned battery capacity: 4500 mAh\n  Discharge: 2000 mAh\n\n';
-        const data = page.context.extractDataFromText(blocks);
+        const data = page.context.extractDataFromText(separated);
         assert.equal(data.statisticsBlocks.length, 2, 'root: each statistics block is kept separately');
         assert.doesNotMatch(data.statistics, /100 mAh/, 'root: statistics blocks must not be concatenated');
         const merged = {reportTime: null, statistics: null};
-        page.context.enrichInfoFromBugreportText(blocks, merged);
+        page.context.enrichInfoFromBugreportText(separated, merged);
         assert.deepEqual([merged.minLearnedCapacity, merged.totalDischargeMah], [4500, 2000], 'root: the later block overrides');
-        assertions += 5;
+        const joined = separated.replace('\n\nStatistics', '\nStatistics');
+        assert.equal(page.context.extractDataFromText(joined).statisticsBlocks.length, 1, 'root: no blank line means one block');
+        const single = {reportTime: null, statistics: null};
+        page.context.enrichInfoFromBugreportText(joined, single);
+        assert.equal(single.minLearnedCapacity, 4000, 'root: one block keeps the first value like Python');
+        assertions += 14;
+    }
+    {
+        // 便携页：原文展示最完整的一段（与 Python 和根目录页一致），字段仍按段依次合并
+        const page = loadPage('HyperBatteryHealthCalc-bat/index.html');
+        const info = {reportTime: null, statistics: null};
+        page.context.parseBugreportText('Statistics since last charge:\n  Min learned battery capacity: 4000 mAh\n  Discharge: 100 mAh\n\n'
+            + 'Statistics since last charge:\n  Min learned battery capacity: 4500 mAh\n\n', info);
+        assert.match(info.statistics, /4000 mAh/, 'portable page shows the most complete statistics block');
+        assert.equal(info.minLearnedCapacity, 4500, 'portable page: the later block still overrides its fields');
+        assertions += 2;
     }
     // 两个网页同名函数（含 async）必须逐字一致，只放行各自的界面函数；防止一页修了另一页漏改。
     // parseBugreportTxtEntry 是两页各自 bugreport 流水线的入口（根目录页把提取结果返回给 processZipFile，便携页直接写入 info）。

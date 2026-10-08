@@ -482,11 +482,11 @@
         const RE_WIFI_MULTICAST_COUNT = /Total WiFi Multicast wakelock Count:\s*(\d+)/i;
         const RE_WIFI_MULTICAST_TIME = /Total WiFi Multicast wakelock time:\s*([\ddhms .]+)/i;
         const RE_CONNECTIVITY_CHANGES = /Connectivity changes:\s*(\d+)/i;
-        const RE_CELLULAR_KERNEL_ACTIVE = /Cellular kernel active time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
-        const RE_CELLULAR_RX_TIME = /Cellular Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_CELLULAR_KERNEL_ACTIVE = /Cellular kernel active time:\s*([\ddhms .]+)(?:\s*\(|$)/im;
+        const RE_CELLULAR_RX_TIME = /Cellular Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/im;
         const RE_CELLULAR_DATA_RECEIVED = /Cellular data received:\s*(\S+)/i;
         const RE_CELLULAR_DATA_SENT = /Cellular data sent:\s*(\S+)/i;
-        const RE_WIFI_SCAN_TIME = /WiFi Scan time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_WIFI_SCAN_TIME = /WiFi Scan time:\s*([\ddhms .]+)(?:\s*\(|$)/im;
         const RE_WIFI_DATA_RECEIVED = /Wifi data received:\s*(\S+)/i;
         const RE_WIFI_DATA_SENT = /Wifi data sent:\s*(\S+)/i;
         const RE_BLUETOOTH_TOTAL = /Bluetooth total received:\s*([^,]+),\s*sent:\s*(\S+)/i;
@@ -985,7 +985,9 @@
             // 诊断时间跟随统计段（与 Python 核心一致）：提供统计段的 bugreport 一并决定时间（缺时间行则置空），其余文件只补空缺
             if (extractedData.statistics) {
                 infoTarget.reportTime = extractedData.reportTime || null;
-            } else if (extractedData.reportTime && !infoTarget.reportTime) {
+                infoTarget.reportTimeFromStatistics = true;
+            } else if (extractedData.reportTime && !infoTarget.reportTime && !infoTarget.reportTimeFromStatistics) {
+                // 统计段决定（含置空）的时间不能被后面没有统计段的文件回填
                 infoTarget.reportTime = extractedData.reportTime;
             }
             if (extractedData.statistics) {
@@ -1293,9 +1295,8 @@
                 }
 
                 // 提取电池统计信息
-                if (line.startsWith('Statistics since last charge:')) {
-                    // 新的统计段：上一段单独收尾，避免两段拼接后字段错配
-                    if (statisticsLines.length) statisticsBlocks.push(statisticsLines.join('\n'));
+                if (line.startsWith('Statistics since last charge:') && !inStatisticsSection) {
+                    // 空行之后的新统计段单独解析；段内（中间没有空行）再出现的标题按同一段处理，与 Python 一致
                     statisticsLines = [line];
                     inStatisticsSection = true;
                 } else if (inStatisticsSection) {
@@ -1357,26 +1358,27 @@
 
             for (const line of lines) {
                 // 提取估算容量
+                // 同一统计段里取首次出现的值（与 Python 的 search 一致），各段之间由调用方按顺序覆盖
                 const estimatedMatch = line.match(/Estimated battery capacity:\s*([\d.]+)\s*mAh/i);
-                if (estimatedMatch) {
+                if (estimatedMatch && result.estimatedCapacity === undefined) {
                     result.estimatedCapacity = parseFloat(estimatedMatch[1]);
                 }
 
                 // 提取上次学习容量
                 const lastLearnedMatch = line.match(/Last learned battery capacity:\s*([\d.]+)\s*mAh/i);
-                if (lastLearnedMatch) {
+                if (lastLearnedMatch && result.lastLearnedCapacity === undefined) {
                     result.lastLearnedCapacity = Math.round(parseFloat(lastLearnedMatch[1]));
                 }
 
                 // 提取最小学习容量
                 const minLearnedMatch = line.match(/Min learned battery capacity:\s*([\d.]+)\s*mAh/i);
-                if (minLearnedMatch) {
+                if (minLearnedMatch && result.minLearnedCapacity === undefined) {
                     result.minLearnedCapacity = Math.round(parseFloat(minLearnedMatch[1]));
                 }
 
                 // 提取最大学习容量
                 const maxLearnedMatch = line.match(/Max learned battery capacity:\s*([\d.]+)\s*mAh/i);
-                if (maxLearnedMatch) {
+                if (maxLearnedMatch && result.maxLearnedCapacity === undefined) {
                     result.maxLearnedCapacity = Math.round(parseFloat(maxLearnedMatch[1]));
                 }
             }
@@ -1457,10 +1459,21 @@
             }
 
             if (lastParsedFile !== file) {
-                // 首次自动解析被取消或未完成时没有可复用的结果：先完整重新解析（含 health 节点），与便携页一致
+                // 首次自动解析被取消或未完成时没有可复用的结果：先完整重新解析（含 health 节点），与便携页一致。
+                // 解析期间像首次自动解析一样收起容量框和“计算”：中途改动输入会让这次解析作废，页面却停在“正在分析”
+                document.getElementById('manual-input-container').style.display = 'none';
+                document.getElementById('calculate-btn').style.display = 'none';
                 showStatus("正在自动分析电池数据，请稍候...");
                 await extractDeviceInfo(file);
-                if (lastParsedFile !== file || !initialCapacityInput.value.trim()) return;
+                if (lastParsedFile !== file) {
+                    // 取消、失败或换文件时各分支已给出提示；同一文件且已停止解析时保证控件可用
+                    if (fileInput.files[0] === file && !parseInProgress) {
+                        document.getElementById('manual-input-container').style.display = 'block';
+                        document.getElementById('calculate-btn').style.display = 'block';
+                    }
+                    return;
+                }
+                if (!initialCapacityInput.value.trim()) return;
             }
 
             const initialCapacity = Number(initialCapacityInput.value);
@@ -1675,6 +1688,8 @@
                 }
             };
 
+            // 页面里的调用（extractDeviceInfo 完成后、calculateBatteryCapacity 重新解析后）都走这个缓存分支；
+            // 下面的直接解析分支只供脚本/测试直接调用 processZipFile 时使用
             if (lastParsedFile === file) {
                 if (!renderBugreportResult(infoTarget.statistics, getCurrentCapacityInfo(infoTarget))) {
                     const reasons = getCurrentCapacityUnavailableReasons(infoTarget);
@@ -1910,15 +1925,18 @@
             ];
             for (const [pattern, key] of sizeFields) {
                 const match = pattern.exec(text);
-                if (match) info[key] = parseDataSizeBytes(match[1]);
+                const value = match ? parseDataSizeBytes(match[1]) : null;
+                if (Number.isFinite(value)) info[key] = value;
             }
         }
 
         function parseBluetoothStats(text, info) {
             let match = RE_BLUETOOTH_TOTAL.exec(text);
             if (match) {
-                info.bluetoothReceivedBytes = parseDataSizeBytes(match[1]);
-                info.bluetoothSentBytes = parseDataSizeBytes(match[2]);
+                const received = parseDataSizeBytes(match[1]);
+                const sent = parseDataSizeBytes(match[2]);
+                if (Number.isFinite(received)) info.bluetoothReceivedBytes = received;
+                if (Number.isFinite(sent)) info.bluetoothSentBytes = sent;
             }
             match = RE_BLUETOOTH_SCAN.exec(text);
             if (match) info.bluetoothScanSeconds = parseDurationSeconds(match[1]);
