@@ -2,6 +2,8 @@
 **版本**: 1.3.1 - v2.1
 **作者**: Q X W 
 
+> 本文件是早期的实现说明，部分细节（行号、正则写法）可能滞后；功能、解析顺序与取值规则以仓库根目录 [README.md](../README.md) 为准。
+
 ## 介绍
 
 HyperBatteryHealthCalc-bat 是一款用于分析小米/HyperOS/MIUI Android 设备电池健康状况的开源工具。它能够从 Android 设备的 bugreport 诊断归档文件（ZIP 格式）中自动提取电池相关数据，计算电池健康度百分比，并生成详细的可视化报告。
@@ -33,7 +35,7 @@ HyperBatteryHealthCalc-bat 是一款用于分析小米/HyperOS/MIUI Android 设�
 - **设备信息识别** — 提取设备型号（`ro.product.marketname` 优先，`ro.product.model` 备用）
 - **电池生命周期追踪** — 提取充电循环次数、估算满充容量、上次/最小/最大学习容量、系统报告满充容量、当前电量计数和充电状态
 - **中文耗电诊断** — 解析亮屏/息屏耗电、屏幕亮度分布、Doze、平均耗电电流、部分唤醒锁、WiFi Multicast、连接切换、UID 前台/后台耗电拆分、蓝牙耗电/扫描/连接设备、移动网络流量、Wi-Fi 流量、CPU 负载、温度和充电功率，输出可读建议
-- **嵌套 ZIP 解析** — 自动穿透外层 ZIP 找到内层诊断 ZIP，支持提前退出
+- **嵌套 ZIP 解析** — 自动穿透外层 ZIP 找到内层诊断 ZIP，读完全部内层包（不提前退出），解析中可随时取消
 - **本地离线运行** — 所有计算在本地完成，数据不上传
 
 ### 四种运行形态
@@ -153,7 +155,7 @@ extract(zip_path) → BatteryInfo
   │     ├── _parse_health_stream() → 设计容量/循环次数/满充容量
   │     ├── _parse_bugreport_stream() → 设备名/时间/统计区块
   │     │     └── _parse_stats_text() → 学习容量 + 屏幕亮度/Doze/耗电构成/唤醒锁/网络/蓝牙/CPU 诊断
-  │     └── [提前退出] has_design_capacity && current_capacity → break
+  │     └── 读完全部内层包（不提前退出），后解析的统计段覆盖先前的；可随时取消
 ```
 
 > Web 版 JS 的 `parseBugreportText()` / `parseStatsText()` / `buildUsageDiagnostics()` 与 Python 的 `_parse_bugreport_stream()` / `_parse_stats_text()` / `usage_diagnostics` 逻辑保持同向，评分表 `RATING_TABLE` 也与 Python 一致。
@@ -283,7 +285,7 @@ parseZipAndRender(file, manualCapacity) [async]
   │           ├── [bugreport txt]: parseBugreportText(content, info)
   │           │     └── 单次扫描: 设备名(marketname>model) + 时间 + 统计区块
   │           │           └── parseStatsText(text, info) → 4 项容量
-  │           ├── [提前退出] if designCap && minLearned: break
+  │           ├── 读完全部条目（不提前退出），条目顺序见 orderZipEntries
   │           └── innerReader.close()
   │
   ├── designCap = info.designCap || manualCap
@@ -492,7 +494,7 @@ document.addEventListener('DOMContentLoaded', function () {
 ```
 
 **与 CLI 版的差异**：
-- 网页版遍历内层 ZIP 条目时**没有**提前退出逻辑（`if has_design_capacity and current_capacity: break`），会遍历完所有内层条目
+- 三端都读完全部条目（都没有提前退出），网页按与 Python 核心相同的顺序解析（`orderZipEntries`）
 - 网页版使用正则字面量 `/batteryFullCharge(Uah)?\s*[:=]\s*(\d+)/`——注意捕获组索引是 `[2]` 而非 `[1]`，因为 `(Uah)?` 是第一个捕获组
 - 内层 ZIP 解析是一次性的：`BlobWriter('application/zip')` 输出完整 blob，再构建新 `ZipReader`。这比 CLI 版的 `io.BytesIO` 方式对象创建重量更大
 
@@ -794,7 +796,7 @@ CLI 版和 GUI 版均默认从此目录读取诊断 ZIP 文件。目录由程序
 ┌──────────────┐ ┌───────────┐ ┌──────────────────────────┐
 │ health 文件   │ │ bugreport  │ │ [可选] 多个内层 ZIP       │
 │ 正则提取      │ │ 文件正则    │ │ → 逐个解析直到关键字段齐  │
-└──────┬───────┘ └─────┬─────┘ │ (CLI/GUI有提前退出,Web无)│
+└──────┬───────┘ └─────┬─────┘ │ (三端都读完全部条目)     │
        │               │        └──────────────────────────┘
        │               │
        ▼               ▼
@@ -806,9 +808,7 @@ CLI 版和 GUI 版均默认从此目录读取诊断 ZIP 文件。目录由程序
 │ (μAh→mAh)    │ │          ... (空行截止/文件尾兜底)       │
 └──────┬───────┘ └─────────────┬───────────────────────────┘
        │                       │
-       │   [提前退出条件检查]     │
-       │   CLI/GUI: design_capacity != None              │
-       │            && current_capacity != None → break  │
+       │   读完全部条目后统一出报告（三端都不提前退出）  │
        └───────────┬───────────┘
                    │
                    ▼
@@ -845,12 +845,12 @@ CLI 版和 GUI 版均默认从此目录读取诊断 ZIP 文件。目录由程序
 | 核心模块 | `from battery_core import *` | `from battery_core import *` | 独立 JS（逻辑等价） |
 | ZIP 解析库 | `zipfile` (标准库) | `zipfile` (标准库) | `zip.js` (第三方) |
 | 正则引擎 | `re` 预编译 (battery_core 类变量) | `re` 预编译 (battery_core 类变量) | JS `const RE_*` 顶层声明 |
-| 提取器提前退出 | ✓ | ✓ | ✓ (v2 已修复) |
+| 读完全部条目（不提前退出，可取消） | ✓ | ✓ | ✓ |
 | 评分方式 | 统一 `_RATING_TABLE` 查找 | 统一 `_RATING_TABLE` 查找 | 统一 `RATING_TABLE` 查找 |
 | 评分边界 | `(100.0001, inf)` | `(100.0001, inf)` | `[100.0001, Infinity]` |
 | 设计容量降级 | `--capacity` → 交互式 | 手动输入框 | 手动输入框 |
-| 多文件批量 | ✓ | ✗ | ✗ |
-| 报告文件输出 | ✓ (`--output`) | ✗ | ✗ |
+| 多文件批量 | ✓ | ✓（批量汇总，可另存 CSV） | ✗ |
+| 报告文件输出 | ✓ (`--output`) | ✓（保存报告 TXT/JSON） | ✓（导出 TXT） |
 | 防 XSS | N/A (终端) | N/A (原生控件) | ✓ `escHtml()` |
 
 ---
@@ -883,7 +883,7 @@ __name__ == '__main__'
               │           ├── [_parse_health_stream]: 逐行正则提取 3 字段
               │           ├── [_parse_bugreport_stream]: 逐行提取设备/时间/统计区块
               │           │     └── _parse_stats_text(text, info)
-              │           └── [提前退出]: has_design_capacity && current_capacity
+              │           └── 读完全部条目（不提前退出）
               │
               ├── [设计容量缺失] → args.capacity 或 prompt_design_capacity()
               ├── [当前容量缺失] → 跳过

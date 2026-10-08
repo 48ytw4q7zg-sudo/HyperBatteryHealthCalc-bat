@@ -1696,16 +1696,18 @@ class BatteryExtractor:
             if longest_stats:
                 # 原文展示最完整的一段；各段字段按出现顺序合并（后出现的覆盖）。
                 info.statistics = longest_stats
-                # 诊断时间跟随统计段：提供统计段的文件一并决定时间；它缺 dumpstate 行时置空，避免时间与统计错配
-                info.report_time = file_report_time
-                run.report_time_from_stats = True
-            elif file_report_time and info.report_time is None and not run.report_time_from_stats:
-                # 只在还没有统计段决定过时间时补空缺；统计段置空的时间不能被后面的无统计文件回填
-                info.report_time = file_report_time
             if in_power_use and power_lines:
                 self._parse_power_use_text('\n'.join(power_lines), info)
             if in_wakelock_leaders and wakelock_lines:
                 self._parse_wakelock_leaders_text('\n'.join(wakelock_lines), info)
+            # 诊断时间跟随统计段：提供统计段的文件一并决定时间（缺 dumpstate 行时置空，避免与统计错配），
+            # 没有统计段的文件只在还没有统计段决定过时补空缺。放在本文件全部解析成功之后，
+            # 解析出错被丢弃的文件不会在共用的 run 上留下标记。
+            if longest_stats:
+                info.report_time = file_report_time
+                run.report_time_from_stats = True
+            elif file_report_time and info.report_time is None and not run.report_time_from_stats:
+                info.report_time = file_report_time
 
     def _parse_property_line(self, line: str, info: BatteryInfo) -> bool:
         if info.device_name is None:
@@ -1839,10 +1841,12 @@ class BatteryExtractor:
         for pattern, attr in size_patterns:
             m = pattern.search(line)
             if m:
-                value = _parse_data_size_bytes(m.group(1))
-                if value is not None and attr not in seen:
+                if attr not in seen:
+                    # 每份文件只看首次出现的那一行（与网页一致）；解析不了就不写值
                     seen.add(attr)
-                    setattr(info, attr, value)
+                    value = _parse_data_size_bytes(m.group(1))
+                    if value is not None:
+                        setattr(info, attr, value)
                 return
 
     def _parse_bluetooth_stats_line(self, line: str, info: BatteryInfo, seen: set[str]) -> None:
@@ -1850,10 +1854,11 @@ class BatteryExtractor:
         m = self._RE_BLUETOOTH_TOTAL.search(line)
         if m:
             for attr, raw in (("bluetooth_received_bytes", m.group(1)), ("bluetooth_sent_bytes", m.group(2))):
-                value = _parse_data_size_bytes(raw)
-                if value is not None and attr not in seen:
+                if attr not in seen:
                     seen.add(attr)
-                    setattr(info, attr, value)
+                    value = _parse_data_size_bytes(raw)
+                    if value is not None:
+                        setattr(info, attr, value)
             return
 
         duration_patterns = (

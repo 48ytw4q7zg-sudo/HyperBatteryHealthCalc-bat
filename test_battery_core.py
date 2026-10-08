@@ -385,6 +385,29 @@ class BatteryCoreTests(unittest.TestCase):
         self.assertEqual(info.bluetooth_scan_seconds, 1.0)
         self.assertIsNone(info.report_time)
 
+    def test_unparseable_first_traffic_line_is_not_replaced_by_later_lines(self):
+        def bugreport(lines):
+            inner = io.BytesIO()
+            with zipfile.ZipFile(inner, "w") as zf:
+                zf.writestr("bugreport-demo.txt", "\n".join(lines))
+            return inner.getvalue()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "traffic.zip"
+            with zipfile.ZipFile(report_path, "w") as outer:
+                outer.writestr("bugreport-2026-09-01.zip", bugreport(
+                    ["     Wifi data received: 1024B", "Statistics since last charge:",
+                     "  Estimated battery capacity: 4600 mAh", ""]))
+                outer.writestr("bugreport-2026-09-30.zip", bugreport(
+                    ["     Wifi data received: N/A", "     Wifi data received: 4096B",
+                     "  Bluetooth total received: N/A, sent: N/A", "  Bluetooth total received: 1024B, sent: 2048B"]))
+            info = BatteryExtractor().extract(report_path)
+
+        # 与网页一致：每份文件只看首次出现的那一行，解析不了就不写值（保留先前文件的值）
+        self.assertEqual(info.wifi_received_bytes, 1024)
+        self.assertIsNone(info.bluetooth_received_bytes)
+        self.assertIsNone(info.bluetooth_sent_bytes)
+
     def test_payload_evidence_reasons_and_shared_batch_failure_reasons(self):
         info = BatteryInfo(design_capacity=5000, design_capacity_source="hardware health 设计容量")
         self.assertIsNone(info.health_percentage)

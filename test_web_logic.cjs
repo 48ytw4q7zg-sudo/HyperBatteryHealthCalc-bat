@@ -780,6 +780,13 @@ async function runProgressAndDriftRegressions() {
         assert.equal(timed.reportTime, null, `${name}: a statistics file without a dumpstate line clears the stale time`);
         parseText('== dumpstate: 2026-10-01 09:00:00\n', timed);
         assert.equal(timed.reportTime, null, `${name}: a later file without statistics must not refill the cleared time`);
+        // 流量与时长：行尾没有括号的时长也要识别（正则需 m 标志）；无法解析的流量值不覆盖已有值
+        const traffic = {wifiReceivedBytes: 4096};
+        page.context.parseConnectivityPowerStats('  Cellular Rx time: 2m 0s 0ms\n  Wifi data received: x\n', traffic);
+        page.context.parseBluetoothStats('  Bluetooth Tx time: 5s 0ms\n  Bluetooth total received: x, sent: 2KB\n', traffic);
+        assert.deepEqual([traffic.cellularRxSeconds, traffic.bluetoothTxSeconds, traffic.wifiReceivedBytes, traffic.bluetoothSentBytes],
+            [120, 5, 4096, 2048], `${name}: durations without parentheses parse and unparseable traffic is skipped`);
+        assert.equal(traffic.bluetoothReceivedBytes, undefined, `${name}: an unparseable Bluetooth total is not written`);
         // 条目顺序与 Python 核心一致：非 bugreport 内层包 → bugreport 内层包（按路径） → health 文本 → 其它文本
         const order = page.context.orderZipEntries([
             {filename: 'b/bugreport-2026-09-30.zip'}, {filename: 'bugreport.txt'}, {filename: 'logs.zip'},
@@ -796,7 +803,7 @@ async function runProgressAndDriftRegressions() {
         slow.resolve('[ro.product.model]: [Stale Device]\n' + stats(5000));
         await stale;
         assert.doesNotMatch(page.element('result').innerHTML, /Stale Device/, `${name}: a stopped parse must not render`);
-        assertions += 17;
+        assertions += 19;
     }
     {
         // 根目录页：首次自动解析在读 health 时被取消，之后点“计算”（不填容量）必须完整重新解析（含 health 节点）；
@@ -838,7 +845,12 @@ async function runProgressAndDriftRegressions() {
         const single = {reportTime: null, statistics: null};
         page.context.enrichInfoFromBugreportText(joined, single);
         assert.equal(single.minLearnedCapacity, 4000, 'root: one block keeps the first value like Python');
-        assertions += 14;
+        // 没有 health/BMS 设计容量时：第一段带估算值的统计段决定兜底设计容量（与 Python、便携页一致）
+        const estimates = {reportTime: null, statistics: null};
+        page.context.enrichInfoFromBugreportText('Statistics since last charge:\n  Estimated battery capacity: 4700 mAh\n\n'
+            + 'Statistics since last charge:\n  Estimated battery capacity: 4500 mAh\n\n', estimates);
+        assert.deepEqual([estimates.designCapacity, estimates.estimatedCapacity], [4700, 4500], 'root: the first estimate is the fallback design');
+        assertions += 15;
     }
     {
         // 便携页：原文展示最完整的一段（与 Python 和根目录页一致），字段仍按段依次合并

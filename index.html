@@ -995,8 +995,9 @@
                 // 与 Python 核心一致：各统计段按出现顺序解析，后一段覆盖它包含的字段
                 for (const block of extractedData.statisticsBlocks) {
                     Object.assign(infoTarget, extractBatteryCapacityFromStatistics(block));
+                    // 与 Python/便携页一致：第一段带估算值的统计段决定兜底设计容量，之后只更新估算值本身
+                    applyEstimatedCapacityAsDesign(infoTarget);
                 }
-                applyEstimatedCapacityAsDesign(infoTarget);
             }
             if (extractedData.batteryState) {
                 Object.assign(infoTarget, extractedData.batteryState);
