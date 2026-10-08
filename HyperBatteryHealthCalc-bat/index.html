@@ -692,8 +692,8 @@
         const RE_WIFI_DATA_SENT = /Wifi data sent:\s*(\S+)/i;
         const RE_BLUETOOTH_TOTAL = /Bluetooth total received:\s*([^,]+),\s*sent:\s*(\S+)/i;
         const RE_BLUETOOTH_SCAN = /Bluetooth scan time:\s*([\ddhms .]+)/i;
-        const RE_BLUETOOTH_RX = /Bluetooth Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
-        const RE_BLUETOOTH_TX = /Bluetooth Tx time:\s*([\ddhms .]+)(?:\s*\(|$)/i;
+        const RE_BLUETOOTH_RX = /Bluetooth Rx time:\s*([\ddhms .]+)(?:\s*\(|$)/im;
+        const RE_BLUETOOTH_TX = /Bluetooth Tx time:\s*([\ddhms .]+)(?:\s*\(|$)/im;
         const RE_BLUETOOTH_DRAIN = /Bluetooth Battery drain:\s*([\d.]+)\s*mAh/i;
         const RE_CPU_LOAD = /Load:\s*([\d.]+)\s*\/\s*([\d.]+)\s*\/\s*([\d.]+)/i;
         const RE_POWER_DRAIN = /Capacity:\s*[\d.]+,\s*Computed drain:\s*([\d.]+),\s*actual drain:\s*([\d.]+)/i;
